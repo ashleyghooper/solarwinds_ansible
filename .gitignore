@@ -130,3 +130,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# gzipped tarballs as created by ansible-galaxy
+*.tar.gz
