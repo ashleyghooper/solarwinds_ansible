@@ -80,12 +80,7 @@ options:
   polling_method:
     description:
       - Polling method to use.
-    choices:
-      - agent
-      - external
-      - icmp
-      - snmp
-      - wmi
+    choices: [ "agent", "external", "icmp", "snmp", "wmi" ]
     type: str
 
   agent_mode:
@@ -132,9 +127,7 @@ options:
     description:
       - SNMPv2c is used by default.
       - SNMPv3 requires use of existing, named SNMPv3 credentials within Orion.
-    choices:
-      - 2c
-      - 3
+    choices: [ "2c", "3" ]
     type: str
     default: "2c"
 
@@ -179,8 +172,7 @@ options:
     type: dict
 
 requirements:
-  - "python >= 2.7"
-  - datetime
+  - "python >= 2.6"
   - dateutil
   - requests
   - traceback
@@ -219,7 +211,7 @@ EXAMPLES = r'''
 
 # TODO: Add Ansible module RETURN section
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import re
 import time
 import traceback
@@ -227,6 +219,8 @@ import traceback
 from ansible.module_utils.basic import AnsibleModule, missing_required_lib
 from ansible.module_utils._text import to_native
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarwinds_client import SolarwindsClient, solarwindsclient_argument_spec
+# Basic UTC timezone for python2.7 compatibility
+from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.utc import UTC
 
 try:
     from dateutil.parser import parse
@@ -273,6 +267,7 @@ class OrionNode(object):
         self.solarwinds = solarwinds
         self.module = self.solarwinds.module
         self.client = self.solarwinds.client
+        self.utc = UTC()
         self.changed = False
 
     def agent(self, module):
@@ -772,7 +767,7 @@ class OrionNode(object):
         return dict(changed=True, msg="Node has been remanaged")
 
     def unmanage_node(self, module, node):
-        now_dt = datetime.now(timezone.utc)
+        now_dt = datetime.now(self.utc)
         unmanage_from = module.params['unmanage_from']
         unmanage_until = module.params['unmanage_until']
 
@@ -795,8 +790,8 @@ class OrionNode(object):
                 "Orion.Nodes",
                 "Unmanage",
                 node['netobject_id'],
-                str(unmanage_from_dt.astimezone(timezone.utc)).replace("+00:00", "Z"),
-                str(unmanage_until_dt.astimezone(timezone.utc)).replace("+00:00", "Z"),
+                str(unmanage_from_dt.astimezone(self.utc)).replace("+00:00", "Z"),
+                str(unmanage_until_dt.astimezone(self.utc)).replace("+00:00", "Z"),
                 False  # use Absolute Time
             )
         except Exception as e:
@@ -810,7 +805,7 @@ class OrionNode(object):
         )
 
     def mute_node(self, module, node):
-        now_dt = datetime.now(timezone.utc)
+        now_dt = datetime.now(self.utc)
         unmanage_from = module.params['unmanage_from']
         unmanage_until = module.params['unmanage_until']
 
@@ -840,8 +835,8 @@ class OrionNode(object):
                 "Orion.AlertSuppression",
                 "SuppressAlerts",
                 [node['uri']],
-                str(unmanage_from_dt.astimezone(timezone.utc)).replace("+00:00", "Z"),
-                str(unmanage_until_dt.astimezone(timezone.utc)).replace("+00:00", "Z")
+                str(unmanage_from_dt.astimezone(self.utc)).replace("+00:00", "Z"),
+                str(unmanage_until_dt.astimezone(self.utc)).replace("+00:00", "Z")
             )
         except Exception as e:
             module.fail_json(msg="Failed to mute node: {0}".format(str(e)))
