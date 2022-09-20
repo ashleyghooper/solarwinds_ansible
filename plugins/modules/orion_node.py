@@ -256,6 +256,8 @@ ORION_DISCOVERY_SNMP_RETRIES = 2
 ORION_DISCOVERY_REPEAT_INTERVAL_MS = 3000
 ORION_DISCOVERY_WMI_RETRIES_COUNT = 2
 ORION_DISCOVERY_WMI_RETRY_INTERVAL_MS = 2000
+# Other Orion constants for numeric fields
+ORION_CONN_STATUS_CONNECTED = 1
 
 
 class OrionNode(object):
@@ -271,18 +273,20 @@ class OrionNode(object):
         self.changed = False
 
     def agent(self, module):
-        agent = {}
+        agent = None
         results = None
         params = module.params
+        base_query_agent = "SELECT AgentId, Name, Hostname, DNSName, IP, NodeId, Uri, ConnectionStatus FROM Orion.AgentManagement.Agent "
         if params['ip_address'] is not None:
             results = self.client.query(
-                "SELECT AgentId, Name, Hostname, DNSName, IP, NodeId FROM Orion.AgentManagement.Agent WHERE IP = @ip_address",
+                base_query_agent +
+                "WHERE IP = @ip_address",
                 ip_address=params['ip_address']
             )
         elif params['node_name'] is not None:
             results = self.client.query(
-                'SELECT AgentId, Name, Hostname, DNSName, IP, NodeId FROM Orion.AgentManagement.Agent WHERE Name = @agent_name OR Hostname = @agent_name OR '
-                'DNSName = @agent_name',
+                base_query_agent +
+                "WHERE Name = @agent_name OR Hostname = @agent_name OR DNSName = @agent_name",
                 agent_name=params['node_name']
             )
         else:
@@ -297,26 +301,32 @@ class OrionNode(object):
                     'name': rec['Name'],
                     'hostname': rec['Hostname'],
                     'dns_name': rec['DNSName'],
+                    'uri': rec['Uri'],
+                    'connection_status': rec['ConnectionStatus']
                 }
         return agent
 
     def node(self, module):
-        node = {}
+        node = None
         results = None
         params = module.params
+        base_query_node = "SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri, ObjectSubType FROM Orion.Nodes "
         if params['node_id'] is not None:
             results = self.client.query(
-                "SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri FROM Orion.Nodes WHERE NodeID = @node_id",
+                base_query_node +
+                "WHERE NodeID = @node_id",
                 node_id=params['node_id']
             )
         elif params['ip_address'] is not None:
             results = self.client.query(
-                "SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri FROM Orion.Nodes WHERE IPAddress = @ip_address",
+                base_query_node +
+                "WHERE IPAddress = @ip_address",
                 ip_address=params['ip_address']
             )
         elif params['node_name'] is not None:
             results = self.client.query(
-                "SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri FROM Orion.Nodes WHERE Caption = @node_name OR DNS = @node_name",
+                base_query_node +
+                "WHERE Caption = @node_name OR DNS = @node_name",
                 node_name=params['node_name']
             )
         else:
@@ -333,7 +343,8 @@ class OrionNode(object):
                     'unmanaged': rec['Unmanaged'],
                     'unmanage_from': parse(rec['UnManageFrom']).isoformat(),
                     'unmanage_until': parse(rec['UnManageUntil']).isoformat(),
-                    'uri': rec['Uri']
+                    'uri': rec['Uri'],
+                    'object_sub_type': rec['ObjectSubType']
                 }
                 if 'DNS' in results['results'][0]:
                     node['dns_name'] = rec['DNS']
@@ -659,7 +670,7 @@ class OrionNode(object):
                     except Exception as e:
                         module.fail_json(msg="Failed to add custom properties: {0}".format(str(e)), **node)
 
-    def add_node_agent(self, module, props):
+    def add_node_agent(self, module, node, agent, props):
         params = module.params
         if not params['agent_mode'] == 'passive':
             module.fail_json(msg="Agent mode '{0}' is not currently supported".format(params['agent_mode']), **props)
@@ -690,20 +701,22 @@ class OrionNode(object):
         except Exception as e:
             module.fail_json(msg="Failed to add agent: {0}".format(str(e)), **props)
 
-        node_pending = True
-        node_status_iter = 0
-        while node_pending:
-            node = self.node(module)
-            if node:
-                node_pending = False
-            else:
-                node_status_iter += 1
-                if node_status_iter >= AGENT_NODE_CREATION_CHECK_RETRIES:
-                    module.fail_json(msg="No more retries while waiting for node to be created for new agent", **props)
-                time.sleep(AGENT_NODE_CREATION_SLEEP_SECS)
+        # Only create node and add resources if it doesn't already exist
+        if not node:
+            node_pending = True
+            node_status_iter = 0
+            while node_pending:
+                node = self.node(module)
+                if node:
+                    node_pending = False
+                else:
+                    node_status_iter += 1
+                    if node_status_iter >= AGENT_NODE_CREATION_CHECK_RETRIES:
+                        module.fail_json(msg="No more retries while waiting for node to be created for new agent", **props)
+                    time.sleep(AGENT_NODE_CREATION_SLEEP_SECS)
 
-        job_id = self.list_resources_for_node(module, props, node)
-        self.import_resources_for_node(module, props, node, job_id)
+            job_id = self.list_resources_for_node(module, props, node)
+            self.import_resources_for_node(module, props, node, job_id)
         return node
 
     def add_node_snmp_wmi(self, module, props):
@@ -723,14 +736,14 @@ class OrionNode(object):
                 module.fail_json(msg="Failed to move node to final polling engine '{0}': {1}".format(module.params['polling_engine_name'], str(e)), **node)
         return node
 
-    def add_node(self, module):
+    def add_node(self, module, node, agent):
         # TODO: add ability to update an existing node
 
         # Validate Fields
         props = self.validate_fields(module)
 
         if module.params['polling_method'] == 'agent':
-            node = self.add_node_agent(module, props)
+            node = self.add_node_agent(module, node, agent, props)
         elif module.params['polling_method'] in ['snmp', 'wmi']:
             node = self.add_node_snmp_wmi(module, props)
         # TODO: external/icmp nodes
@@ -748,12 +761,16 @@ class OrionNode(object):
         self.set_dns(module, props, node)
         if not props['External']:
             self.set_custom_properties(module, props, node)
-        module.exit_json(**node)
 
         return dict(changed=True, msg="Node has been added")
 
+    def remove_agent(self, module, agent):
+        try:
+            self.client.delete(agent['uri'])
+        except Exception as e:
+            module.fail_json(msg="Error removing agent: {0}".format(str(e)), **agent)
+
     def remove_node(self, module, node):
-        # TODO: Check for agent installation and remove, if requested
         try:
             self.client.delete(node['uri'])
         except Exception as e:
@@ -928,47 +945,38 @@ def main():
             caption = module.params['node_name']
         except Exception:
             caption = module.params['ip_address']
-    #  node_id = module.params['node_id']
-    #  node_name = module.params['node_name']
-    #  ip_address = module.params['ip_address']
-    #  polling_method = module.params['polling_method']
-    #  agent_mode = module.params['agent_mode']
-    #  agent_port = module.params['agent_port']
-    #  agent_shared_secret = module.params['agent_shared_secret']
-    #  agent_auto_update = module.params['agent_auto_update']
-    #  polling_engine_id = module.params['polling_engine_id']
-    #  polling_engine_name = module.params['polling_engine_name']
-    #  discovery_polling_engine_name = module.params['discovery_polling_engine_name']
-    #  snmp_version = module.params['snmp_version']
-    #  snmp_port = module.params['snmp_port']
-    #  snmp_allow_64 = module.params['snmp_allow_64']
-    #  credential_name = module.params['credential_name']
-    #  interface_filters = module.params['interface_filters']
-    #  volume_filters = module.params['volume_filters']
-    #  volume_filter_cutoff_max = module.params['volume_filter_cutoff_max']
-    #  custom_properties = module.params['custom_properties']
 
     solarwinds = SolarwindsClient(module)
     orion_node = OrionNode(solarwinds)
 
     node = orion_node.node(module)
+    agent = orion_node.agent(module)
 
     if state == 'present':
-        if node:
+        # Do nothing if the node exists and is not an agent node,
+        # or is an agent node but is connected.
+        if node and (node['object_sub_type'].upper() != 'AGENT' or (agent and agent['connection_status'] == ORION_CONN_STATUS_CONNECTED)):
             res_args = node
         else:
             # check mode: exit changed if device doesn't exist
             if module.check_mode:
                 module.exit_json(changed=True)
             else:
-                res_args = orion_node.add_node(module)
+                # If we have an agent but no node, nix the agent
+                # and let it be recreated.
+                if agent:
+                    orion_node.remove_agent(module, agent)
+                res_args = orion_node.add_node(module, node, agent)
     elif state == 'absent':
-        if node:
-            # check mode: exit changed if device exists
+        if node or agent:
+            # check mode: exit changed if either node or agent exists
             if module.check_mode:
                 module.exit_json(changed=True)
             else:
-                orion_node.remove_node(module, node)
+                if agent:
+                    orion_node.remove_agent(module, agent)
+                if node:
+                    orion_node.remove_node(module, node)
                 res_args = dict(changed=True, msg="Node has been removed")
         else:
             res_args = node
