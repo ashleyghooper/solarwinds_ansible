@@ -184,10 +184,11 @@ EXAMPLES = r'''
   gather_facts: no
   tasks:
     - name:  Remove a node from Orion
-      orion_node:
-        orion_hostname: "{{ solarwinds_host }}"
-        orion_username: "{{ solarwinds_username }}"
-        orion_password: "{{ solarwinds_password }}"
+      anophelesgreyhoe.solarwinds.orion_node:
+        solarwinds_connection:
+          hostname: "{{ solarwinds_host }}"
+          username: "{{ solarwinds_username }}"
+          password: "{{ solarwinds_password }}"
         node_name: servername
         state: absent
       delegate_to: localhost
@@ -197,10 +198,11 @@ EXAMPLES = r'''
   hosts: all
   gather_facts: no
   tasks:
-    - orion_node:
-        orion_hostname: "{{ solarwinds_host }}"
-        orion_username: "{{ solarwinds_username }}"
-        orion_password: "{{ solarwinds_password }}"
+    - anophelesgreyhoe.solarwinds.orion_node:
+        solarwinds_connection:
+          hostname: "{{ solarwinds_host }}"
+          username: "{{ solarwinds_username }}"
+          password: "{{ solarwinds_password }}"
         node_name: "{{ inventory_hostname }}"
         state: muted
         unmanage_from: "2020-03-13T20:58:22.033"

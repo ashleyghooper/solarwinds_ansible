@@ -1,0 +1,19 @@
+---
+extends: default
+
+ignore: |
+  individuals/
+
+rules:
+  braces: disable
+  document-start: disable
+  line-length:
+    max: 999
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+  comments:
+    min-spaces-from-content: 0
+    require-starting-space: false
+  comments-indentation: disable
+  truthy:
+    allowed-values: ["yes", "no", "True", "False", "true", "false"]
