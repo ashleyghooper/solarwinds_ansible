@@ -358,13 +358,13 @@ class OrionNode(object):
         # SolarWinds field names.
         params = module.params
         # Setup properties for new node
-        # module.fail_json(msg='FAIL NOW', **params)
         props = {
-            'IPAddress': params['ip_address'],
             'ObjectSubType': params['polling_method'].upper(),
             'External': True if params['polling_method'] == 'external' else False,
             'Caption': params['caption'] if 'caption' in params else params['node_name']
         }
+        if 'ip_address' in params and params['ip_address']:
+            props['IPAddress'] = params['ip_address']
 
         if '.' in params['node_name']:
             props['DNS'] = params['node_name']
@@ -921,15 +921,17 @@ def main():
         argument_spec=argument_spec,
         mutually_exclusive=[['polling_engine_id', 'polling_engine_name']],
         required_together=[],
+        required_one_of=[['node_name','ip_address']],
         required_if=[
-            ['polling_method', 'agent', ['agent_mode', 'agent_port', 'agent_auto_update']],
-            ['polling_method', 'snmp', ['credential_name', 'snmp_version', 'snmp_port', 'snmp_allow_64']],
-            ['polling_method', 'wmi', ['credential_name']],
-            ['agent_mode', 'passive', ['agent_port', 'agent_shared_secret']],
+            ['state', 'present', ['polling_method']],
             ['state', 'muted', ['unmanage_from', 'unmanage_until']],
             ['state', 'remanaged', ['unmanage_until']],
             ['state', 'unmanaged', ['unmanage_from', 'unmanage_until']],
             ['state', 'unmuted', ['unmanage_until']],
+            ['polling_method', 'agent', ['agent_mode', 'agent_port', 'agent_auto_update']],
+            ['polling_method', 'snmp', ['credential_name', 'snmp_version', 'snmp_port', 'snmp_allow_64']],
+            ['polling_method', 'wmi', ['credential_name']],
+            ['agent_mode', 'passive', ['agent_port', 'agent_shared_secret']],
         ],
         supports_check_mode=True
     )
@@ -981,7 +983,7 @@ def main():
                     orion_node.remove_node(module, node)
                 res_args = dict(changed=True, msg="Node has been removed")
         else:
-            res_args = node
+            res_args = dict(changed=False, msg="Node does not exist")
     else:
         if not node:
             res_args = dict(
