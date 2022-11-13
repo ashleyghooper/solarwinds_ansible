@@ -8,7 +8,7 @@ namespace: anophelesgreyhoe
 name: solarwinds
 
 # The version of the collection. Must be compatible with semantic versioning
-version: '1.2.2'
+version: "2.0.0"
 
 # The path to the Markdown (.md) readme file. This path is relative to the root of the collection
 readme: README.md
@@ -17,7 +17,6 @@ readme: README.md
 # @nicks:irc/im.site#channel'
 authors:
   - Ashley Hooper <ashleyghooper@gmail.com>
-
 
 ### OPTIONAL but strongly recommended
 # A short summary description of the collection
@@ -30,7 +29,7 @@ license:
 
 # The path to the license file for the collection. This path is relative to the root of the collection. This key is
 # mutually exclusive with 'license'
-license_file: ''
+license_file: ""
 
 # A list of tags you want to associate with the collection for indexing/searching. A tag name has the same character
 # requirements as 'namespace' and 'name'

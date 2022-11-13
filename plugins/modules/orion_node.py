@@ -6,12 +6,12 @@
 # GNU General Public License v3.0+
 # (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-from __future__ import (absolute_import, division, print_function)
+from __future__ import absolute_import, division, print_function
 
 __metaclass__ = type
 
 
-DOCUMENTATION = r'''
+DOCUMENTATION = r"""
 ---
 module: orion_node
 
@@ -143,16 +143,29 @@ options:
     type: bool
     default: true
 
-  credential_name:
+  credential_names:
     description:
-      - The named, existing credential to use to manage this device
-    type: str
+      - List of credential names to use for node discovery
+    type: list
+    elements: str
 
-  interface_filters:
+  discovery_interface_filters:
     description:
       - List of SolarWinds Orion interface discovery filters
     type: list
     elements: dict
+
+  interface_filters:
+    description:
+      - List of regular expressions by which to exclude interfaces from monitoring
+    type: list
+    elements: dict
+
+  interface_filter_cutoff_max:
+    description:
+      - Maximum number of interfaces that can be removed from monitoring for a newly discovered device
+    type: int
+    default: 10
 
   volume_filters:
     description:
@@ -176,9 +189,9 @@ requirements:
   - dateutil
   - requests
   - traceback
-'''
+"""
 
-EXAMPLES = r'''
+EXAMPLES = r"""
 - name: Remove nodes
   hosts: all
   gather_facts: no
@@ -209,7 +222,7 @@ EXAMPLES = r'''
         unmanage_until: "2020-03-14T20:58:22.033"
       delegate_to: localhost
       throttle: 1
-'''
+"""
 
 # TODO: Add Ansible module RETURN section
 
@@ -220,7 +233,11 @@ import traceback
 
 from ansible.module_utils.basic import AnsibleModule, missing_required_lib
 from ansible.module_utils._text import to_native
-from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarwinds_client import SolarwindsClient, solarwindsclient_argument_spec
+from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarwinds_client import (
+    SolarwindsClient,
+    solarwindsclient_argument_spec,
+)
+
 # Basic UTC timezone for python2.7 compatibility
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.utc import UTC
 
@@ -234,6 +251,7 @@ else:
 
 try:
     import requests
+
     requests.urllib3.disable_warnings()
 except ImportError:
     HAS_REQUESTS = False
@@ -250,6 +268,23 @@ AGENT_NODE_CREATION_SLEEP_SECS = 3
 # Total time will be retries multiplied by sleep seconds.
 DISCOVERY_STATUS_CHECK_RETRIES = 60
 DISCOVERY_RETRY_SLEEP_SECS = 3
+# These constants control how many times and at what interval this module
+# will check the status of the Orion ListResources job to see if it has completed.
+# Total time will be retries multiplied by sleep seconds.
+LIST_RESOURCES_STATUS_CHECK_RETRIES = 60
+LIST_RESOURCES_RETRY_SLEEP_SECS = 3
+# Discovery job statuses
+# https://github.com/solarwinds/OrionSDK/blob/master/Samples/PowerShell/DiscoverSnmpV3Node.ps1
+ORION_DISCOVERY_JOB_STATUS_UNKNOWN = 0
+ORION_DISCOVERY_JOB_STATUS_IN_PROGRESS = 1
+ORION_DISCOVERY_JOB_STATUS_FINISHED = 2
+ORION_DISCOVERY_JOB_STATUS_ERROR = 3
+ORION_DISCOVERY_JOB_STATUS_NOT_SCHEDULED = 4
+ORION_DISCOVERY_JOB_STATUS_SCHEDULED = 5
+ORION_DISCOVERY_JOB_STATUS_NOT_COMPLETED = 6
+ORION_DISCOVERY_JOB_STATUS_CANCELING = 7
+ORION_DISCOVERY_JOB_STATUS_READY_FOR_IMPORT = 8
+
 # These control the discovery timeouts within Orion itself.
 ORION_DISCOVERY_JOB_TIMEOUT_SECS = 300
 ORION_DISCOVERY_SEARCH_TIMEOUT_MS = 20000
@@ -261,10 +296,12 @@ ORION_DISCOVERY_WMI_RETRY_INTERVAL_MS = 2000
 # Other Orion constants for numeric fields
 ORION_CONN_STATUS_CONNECTED = 1
 
+POLLING_METHODS_USING_DISCOVERY = ["snmp", "wmi"]
+
 
 class OrionNode(object):
     """
-        Object to manage nodes in SolarWinds Orion.
+    Object to manage nodes in SolarWinds Orion.
     """
 
     def __init__(self, solarwinds):
@@ -278,33 +315,41 @@ class OrionNode(object):
         agent = None
         results = None
         params = module.params
-        base_query_agent = "SELECT AgentId, Name, Hostname, DNSName, IP, NodeId, Uri, ConnectionStatus FROM Orion.AgentManagement.Agent "
-        if params['ip_address'] is not None:
+        base_query_agent = "SELECT AgentId, Name, Hostname, DNSName, IP, NodeId, Uri, ConnectionStatus FROM Orion.AgentManagement.Agent"
+        if params["ip_address"] is not None:
             results = self.client.query(
-                base_query_agent +
-                "WHERE IP = @ip_address",
-                ip_address=params['ip_address']
+                " ".join(
+                    [
+                        base_query_agent,
+                        "WHERE IP = @ip_address",
+                    ]
+                ),
+                ip_address=params["ip_address"],
             )
-        elif params['node_name'] is not None:
+        elif params["node_name"] is not None:
             results = self.client.query(
-                base_query_agent +
-                "WHERE Name = @agent_name OR Hostname = @agent_name OR DNSName = @agent_name",
-                agent_name=params['node_name']
+                " ".join(
+                    [
+                        base_query_agent,
+                        "WHERE Name = @agent_name OR Hostname = @agent_name OR DNSName = @agent_name",
+                    ]
+                ),
+                agent_name=params["node_name"],
             )
         else:
             # No Id provided
-            module.fail_json(msg="You must provide either agent_id, ip_address, or node_name")
+            module.fail_json(msg="You must provide either ip_address or node_name")
 
         if results is not None:
-            if 'results' in results and results['results']:
-                rec = results['results'][0]
+            if "results" in results and results["results"]:
+                rec = results["results"][0]
                 agent = {
-                    'agent_id': rec['AgentId'],
-                    'name': rec['Name'],
-                    'hostname': rec['Hostname'],
-                    'dns_name': rec['DNSName'],
-                    'uri': rec['Uri'],
-                    'connection_status': rec['ConnectionStatus']
+                    "agent_id": rec["AgentId"],
+                    "name": rec["Name"],
+                    "hostname": rec["Hostname"],
+                    "dns_name": rec["DNSName"],
+                    "uri": rec["Uri"],
+                    "connection_status": rec["ConnectionStatus"],
                 }
         return agent
 
@@ -312,44 +357,45 @@ class OrionNode(object):
         node = None
         results = None
         params = module.params
-        base_query_node = "SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri, ObjectSubType FROM Orion.Nodes "
-        if params['node_id'] is not None:
+        base_query_node = "SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri, ObjectSubType FROM Orion.Nodes"
+        if params["node_id"] is not None:
             results = self.client.query(
-                base_query_node +
-                "WHERE NodeID = @node_id",
-                node_id=params['node_id']
+                " ".join([base_query_node, "WHERE NodeID = @node_id"]),
+                node_id=params["node_id"],
             )
-        elif params['ip_address'] is not None:
+        elif params["ip_address"] is not None:
             results = self.client.query(
-                base_query_node +
-                "WHERE IPAddress = @ip_address",
-                ip_address=params['ip_address']
+                " ".join([base_query_node, "WHERE IPAddress = @ip_address"]),
+                ip_address=params["ip_address"],
             )
-        elif params['node_name'] is not None:
+        elif params["node_name"] is not None:
             results = self.client.query(
-                base_query_node +
-                "WHERE Caption = @node_name OR DNS = @node_name",
-                node_name=params['node_name']
+                " ".join(
+                    [base_query_node, "WHERE Caption = @node_name OR DNS = @node_name"]
+                ),
+                node_name=params["node_name"],
             )
         else:
             # No Id provided
-            self.module.fail_json(msg="You must provide either node_id, ip_address, or node_name")
+            self.module.fail_json(
+                msg="You must provide either node_id, ip_address, or node_name"
+            )
 
         if results is not None:
-            if 'results' in results and results['results']:
-                rec = results['results'][0]
+            if "results" in results and results["results"]:
+                rec = results["results"][0]
                 node = {
-                    'node_id': int(rec['NodeID']),
-                    'caption': rec['Caption'],
-                    'netobject_id': 'N:{0}'.format(rec['NodeID']),
-                    'unmanaged': rec['Unmanaged'],
-                    'unmanage_from': parse(rec['UnManageFrom']).isoformat(),
-                    'unmanage_until': parse(rec['UnManageUntil']).isoformat(),
-                    'uri': rec['Uri'],
-                    'object_sub_type': rec['ObjectSubType']
+                    "node_id": int(rec["NodeID"]),
+                    "caption": rec["Caption"],
+                    "netobject_id": "N:{0}".format(rec["NodeID"]),
+                    "unmanaged": rec["Unmanaged"],
+                    "unmanage_from": parse(rec["UnManageFrom"]).isoformat(),
+                    "unmanage_until": parse(rec["UnManageUntil"]).isoformat(),
+                    "uri": rec["Uri"],
+                    "object_sub_type": rec["ObjectSubType"],
                 }
-                if 'DNS' in results['results'][0]:
-                    node['dns_name'] = rec['DNS']
+                if "DNS" in results["results"][0]:
+                    node["dns_name"] = rec["DNS"]
         return node
 
     def validate_fields(self, module):
@@ -358,197 +404,314 @@ class OrionNode(object):
         # SolarWinds field names.
         params = module.params
         # Setup properties for new node
+        polling_method = params["polling_method"]
+        if polling_method == "snmp":
+            object_sub_type = "SNMP"
+        elif polling_method in ["external", "icmp"]:
+            object_sub_type = "ICMP"
+        elif polling_method == "agent":
+            object_sub_type = "AGENT"
+        elif polling_method == "wmi":
+            object_sub_type = "WMI"
+        else:
+            module.fail_json(msg="Polling method not supported")
         props = {
-            'ObjectSubType': params['polling_method'].upper(),
-            'External': True if params['polling_method'] == 'external' else False,
-            'Caption': params['caption'] if 'caption' in params else params['node_name']
+            "ObjectSubType": object_sub_type,
+            "External": True if params["polling_method"] == "external" else False,
+            "Caption": params["caption"]
+            if "caption" in params
+            else (
+                params["node_name"] if "node_name" in params else params["ip_address"]
+            ),
         }
-        if 'ip_address' in params and params['ip_address']:
-            props['IPAddress'] = params['ip_address']
 
-        if '.' in params['node_name']:
-            props['DNS'] = params['node_name']
+        if "ip_address" in params and params["ip_address"]:
+            props["IPAddress"] = params["ip_address"]
+
+        if "." in params["node_name"]:
+            props["DNS"] = params["node_name"]
+
+        if params["polling_engine_name"]:
+            polling_engine_name = params["polling_engine_name"]
+            polling_engine = self.solarwinds.polling_engine(
+                module, params["polling_engine_name"]
+            )
+            if not polling_engine:
+                module.fail_json(
+                    msg="Failed to find polling engine '{0}'".format(
+                        polling_engine_name
+                    )
+                )
+            props["EngineID"] = self.solarwinds.polling_engine(
+                module, params["polling_engine_name"]
+            )["EngineID"]
+        else:
+            props["EngineID"] = 1
+
+        # Only set DiscoveryEngineID for polling methods that use discovery
+        if params["polling_method"] in POLLING_METHODS_USING_DISCOVERY:
+            if (
+                "discovery_polling_engine_name" in params
+                and params["discovery_polling_engine_name"]
+                and params["discovery_polling_engine_name"]
+                != params["polling_engine_name"]
+            ):
+                discovery_polling_engine_name = params["discovery_polling_engine_name"]
+                discovery_polling_engine = self.solarwinds.polling_engine(
+                    module, params["discovery_polling_engine_name"]
+                )
+                if not discovery_polling_engine:
+                    module.fail_json(
+                        msg="Failed to find discovery polling engine '{0}'".format(
+                            discovery_polling_engine_name
+                        )
+                    )
+                props["DiscoveryEngineID"] = self.solarwinds.polling_engine(
+                    module, params["discovery_polling_engine_name"]
+                )["EngineID"]
+            else:
+                props["DiscoveryEngineID"] = props["EngineID"]
 
         # Validate required fields
-        if not props['IPAddress']:
+        if not props["IPAddress"]:
             module.fail_json(msg="IP Address is required")
 
-        if not props['External']:
-            if 'node_name' not in params:
+        if not props["External"]:
+            if "node_name" not in params:
                 module.fail_json(msg="Node name is required")
 
-        if not props['ObjectSubType']:
-            module.fail_json(msg="Polling Method is required [external, snmp, icmp, wmi, agent]")
-        elif props['ObjectSubType'] == 'SNMP':
-            props['SNMPVersion'] = params['snmp_version']
-            props['SNMPPort'] = params['snmp_port']
-            props['Allow64BitCounters'] = params['snmp_allow_64']
-            if 'SNMPVersion' not in props:
-                props['SNMPVersion'] = '2'
-            if 'SNMPPort' not in props:
-                props['SNMPPort'] = '161'
-            if 'Allow64BitCounters' not in props:
-                props['Allow64BitCounters'] = True
-            if not params['credential_name']:
-                module.fail_json(msg="A credential name is required")
+        if props["ObjectSubType"] == "SNMP":
+            props["SNMPVersion"] = params["snmp_version"]
+            props["SNMPPort"] = params["snmp_port"]
+            props["Allow64BitCounters"] = params["snmp_allow_64"]
+            if "SNMPVersion" not in props:
+                props["SNMPVersion"] = "2"
+            if "SNMPPort" not in props:
+                props["SNMPPort"] = "161"
+            if "Allow64BitCounters" not in props:
+                props["Allow64BitCounters"] = True
+            if not params["credential_names"]:
+                module.fail_json(msg="One or more credential names are required")
 
-        elif props['ObjectSubType'] == 'EXTERNAL':
-            props['ObjectSubType'] = 'ICMP'
-
-        elif props['ObjectSubType'] == 'AGENT':
-            if 'agent_mode' not in params:
+        elif props["ObjectSubType"] == "AGENT":
+            if "agent_mode" not in params:
                 module.fail_json(msg="Agent mode is required for agent polling method")
             else:
-                if params['agent_mode'] == 'passive':
-                    if 'agent_port' not in params or 'agent_shared_secret' not in params:
-                        module.fail_json(msg="Agent port and shared secret are required for agent in passive mode")
+                if params["agent_mode"] == "passive":
+                    if (
+                        "agent_port" not in params
+                        or "agent_shared_secret" not in params
+                    ):
+                        module.fail_json(
+                            msg="Agent port and shared secret are required for agent in passive mode"
+                        )
                 else:
-                    module.fail_json(msg="Only passive agents (server-initiated communication) are currently supported")
-
-        if params['polling_engine_name']:
-            props['EngineID'] = self.solarwinds.polling_engine(module, params['polling_engine_name'])['EngineID']
-        else:
-            props['EngineID'] = 1
-
-        if 'discovery_polling_engine_name' in params and params['discovery_polling_engine_name'] != params['polling_engine_name']:
-            props['DiscoveryEngineID'] = self.solarwinds.polling_engine(module, params['discovery_polling_engine_name'])['EngineID']
-        else:
-            props['DiscoveryEngineID'] = props['EngineID']
-
-        if params['state'] == 'present':
-            if not props['Caption']:
-                module.fail_json(msg="Node name is required")
+                    module.fail_json(
+                        msg="Only passive agents (server-initiated communication) are currently supported"
+                    )
 
         return props
 
     def discover_node(self, module, props):
+        # Retrieve IDs of all credentials to be used
+        discovery_credentials = []
+        for i in range(len(module.params["credential_names"])):
+            credential_name = module.params["credential_names"][i]
+            credential = self.solarwinds.credential(module, credential_name)
+            if not credential:
+                module.fail_json(
+                    msg="Failed to retrieve credential '{0}'".format(credential_name)
+                )
+            discovery_credentials.append(
+                {
+                    "CredentialID": self.solarwinds.credential(
+                        module, module.params["credential_names"][i]
+                    )["ID"],
+                    "Order": i + 1,
+                }
+            )
+
         # Start to prepare our discovery profile
         core_plugin_context = {
-            'BulkList': [{'Address': module.params['ip_address']}],
-            'Credentials': [
-                {
-                    'CredentialID': self.solarwinds.credential(module),
-                    'Order': 1
-                }
-            ],
-            'WmiRetriesCount': ORION_DISCOVERY_WMI_RETRIES_COUNT,
-            'WmiRetryIntervalMiliseconds': ORION_DISCOVERY_WMI_RETRY_INTERVAL_MS
+            "BulkList": [{"Address": module.params["ip_address"]}],
+            "Credentials": discovery_credentials,
+            "WmiRetriesCount": ORION_DISCOVERY_WMI_RETRIES_COUNT,
+            "WmiRetryIntervalMiliseconds": ORION_DISCOVERY_WMI_RETRY_INTERVAL_MS,
         }
 
         try:
-            core_plugin_config = self.client.invoke("Orion.Discovery", "CreateCorePluginConfiguration", core_plugin_context)
-        except Exception as e:
-            module.fail_json(msg="Failed to create core plugin configuration: {0}".format(str(e)), **props)
+            core_plugin_config = self.client.invoke(
+                "Orion.Discovery", "CreateCorePluginConfiguration", core_plugin_context
+            )
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to create core plugin configuration: {0}".format(str(ex)),
+                **props
+            )
 
         expression_filters = [
             {"Prop": "Descr", "Op": "!Any", "Val": "null"},
             {"Prop": "Descr", "Op": "!Regex", "Val": "^$"},
         ]
-        if 'interface_filters' in module.params and module.params['interface_filters']:
-            expression_filters += module.params['interface_filters']
+        if (
+            "discovery_interface_filters" in module.params
+            and module.params["discovery_interface_filters"]
+        ):
+            expression_filters += module.params["discovery_interface_filters"]
 
         interfaces_plugin_context = {
-            "AutoImportStatus": ['Up'],
-            "AutoImportVlanPortTypes": ['Trunk', 'Access', 'Unknown'],
-            "AutoImportVirtualTypes": ['Physical', 'Virtual', 'Unknown'],
-            "AutoImportExpressionFilter": expression_filters
+            "AutoImportStatus": ["Up"],
+            "AutoImportVlanPortTypes": ["Trunk", "Access", "Unknown"],
+            "AutoImportVirtualTypes": ["Physical", "Virtual", "Unknown"],
+            "AutoImportExpressionFilter": expression_filters,
         }
 
         try:
-            interfaces_plugin_config = self.client.invoke("Orion.NPM.Interfaces", "CreateInterfacesPluginConfiguration", interfaces_plugin_context)
-        except Exception as e:
-            module.fail_json(msg="Failed to create interfaces plugin configuration for node discovery: {0}".format(str(e)), **props)
+            interfaces_plugin_config = self.client.invoke(
+                "Orion.NPM.Interfaces",
+                "CreateInterfacesPluginConfiguration",
+                interfaces_plugin_context,
+            )
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to create interfaces plugin configuration for node discovery: {0}".format(
+                    str(ex)
+                ),
+                **props
+            )
 
-        discovery_name = "orion_node.py.{0}.{1}".format(module.params['node_name'], datetime.now().isoformat())
+        discovery_name = "orion_node.py.{0}.{1}".format(
+            module.params["node_name"], datetime.now().isoformat()
+        )
         discovery_desc = "Automated discovery from orion_node.py Ansible module"
         discovery_profile = {
-            'Name': discovery_name,
-            'Description': discovery_desc,
-            'EngineID': props['DiscoveryEngineID'],
-            'JobTimeoutSeconds': ORION_DISCOVERY_JOB_TIMEOUT_SECS,
-            'SearchTimeoutMiliseconds': ORION_DISCOVERY_SEARCH_TIMEOUT_MS,
-            'SnmpTimeoutMiliseconds': ORION_DISCOVERY_SNMP_TIMEOUT_MS,
-            'RepeatIntervalMiliseconds': ORION_DISCOVERY_REPEAT_INTERVAL_MS,
-            'SnmpRetries': ORION_DISCOVERY_SNMP_RETRIES,
-            'SnmpPort': module.params['snmp_port'],
-            'HopCount': 0,
-            'PreferredSnmpVersion': 'SNMP' + str(module.params['snmp_version']),
-            'DisableIcmp': False,
-            'AllowDuplicateNodes': False,
-            'IsAutoImport': True,
-            'IsHidden': False,
-            'PluginConfigurations': [
-                {'PluginConfigurationItem': core_plugin_config},
-                {'PluginConfigurationItem': interfaces_plugin_config}
-            ]
+            "Name": discovery_name,
+            "Description": discovery_desc,
+            "EngineID": props["DiscoveryEngineID"],
+            "JobTimeoutSeconds": ORION_DISCOVERY_JOB_TIMEOUT_SECS,
+            "SearchTimeoutMiliseconds": ORION_DISCOVERY_SEARCH_TIMEOUT_MS,
+            "SnmpTimeoutMiliseconds": ORION_DISCOVERY_SNMP_TIMEOUT_MS,
+            "RepeatIntervalMiliseconds": ORION_DISCOVERY_REPEAT_INTERVAL_MS,
+            "SnmpRetries": ORION_DISCOVERY_SNMP_RETRIES,
+            "SnmpPort": module.params["snmp_port"],
+            "HopCount": 0,
+            "PreferredSnmpVersion": "SNMP" + str(module.params["snmp_version"]),
+            "DisableIcmp": False,
+            "AllowDuplicateNodes": False,
+            "IsAutoImport": True,
+            "IsHidden": False,
+            "PluginConfigurations": [
+                {"PluginConfigurationItem": core_plugin_config},
+                {"PluginConfigurationItem": interfaces_plugin_config},
+            ],
         }
 
         # Initiate discovery job with above discovery profile
         try:
-            discovery_res = self.client.invoke("Orion.Discovery", "StartDiscovery", discovery_profile)
+            discovery_res = self.client.invoke(
+                "Orion.Discovery", "StartDiscovery", discovery_profile
+            )
             self.changed = True
-        except Exception as e:
-            module.fail_json(msg="Failed to start node discovery: {0}".format(str(e)), **props)
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to start node discovery: {0}".format(str(ex)), **props
+            )
         discovery_profile_id = int(discovery_res)
 
         # Loop until discovery job finished
-        # Discovery job statuses are:
-        # 0 {"Unknown"} 1 {"InProgress"} 2 {"Finished"} 3 {"Error"} 4 {"NotScheduled"} 5 {"Scheduled"} 6 {"NotCompleted"} 7 {"Canceling"} 8 {"ReadyForImport"}
-        # https://github.com/solarwinds/OrionSDK/blob/master/Samples/PowerShell/DiscoverSnmpV3Node.ps1
         discovery_active = True
         discovery_iter = 0
         while discovery_active:
             try:
-                status_res = self.client.query("SELECT Status FROM Orion.DiscoveryProfiles WHERE ProfileID = @profile_id", profile_id=discovery_profile_id)
-            except Exception as e:
-                module.fail_json(msg="Failed to query node discovery status: {0}".format(str(e)), **props)
-            if len(status_res['results']) > 0:
-                if next(s for s in status_res['results'])['Status'] == 2:
+                status_res = self.client.query(
+                    "SELECT Status FROM Orion.DiscoveryProfiles WHERE ProfileID = @profile_id",
+                    profile_id=discovery_profile_id,
+                )
+            except Exception as ex:
+                module.fail_json(
+                    msg="Failed to query node discovery status: {0}".format(str(ex)),
+                    **props
+                )
+            if len(status_res["results"]) > 0:
+                discovery_job_status = int(
+                    next(s for s in status_res["results"])["Status"]
+                )
+                if discovery_job_status in [
+                    ORION_DISCOVERY_JOB_STATUS_FINISHED,
+                    ORION_DISCOVERY_JOB_STATUS_ERROR,
+                    ORION_DISCOVERY_JOB_STATUS_NOT_COMPLETED,
+                    ORION_DISCOVERY_JOB_STATUS_CANCELING,
+                ]:
                     discovery_active = False
             else:
                 discovery_active = False
-            discovery_iter += 1
-            if discovery_iter >= DISCOVERY_STATUS_CHECK_RETRIES:
-                module.fail_json(msg="Timeout while waiting for node discovery job to terminate", **props)
-            time.sleep(DISCOVERY_RETRY_SLEEP_SECS)
+            # Only check retries and sleep if discovery job is still in progress
+            if discovery_active:
+                discovery_iter += 1
+                if discovery_iter >= DISCOVERY_STATUS_CHECK_RETRIES:
+                    module.fail_json(
+                        msg="Timeout while waiting for node discovery job to terminate",
+                        **props
+                    )
+                time.sleep(DISCOVERY_RETRY_SLEEP_SECS)
 
         # Retrieve Result and BatchID to find items added to new node by discovery
         discovery_log_res = None
         try:
             discovery_log_res = self.client.query(
-                "SELECT Result, ResultDescription, ErrorMessage, BatchID "
-                "FROM Orion.DiscoveryLogs WHERE ProfileID = @profile_id",
-                profile_id=discovery_profile_id
+                " ".join(
+                    [
+                        "SELECT Result, ResultDescription, ErrorMessage, BatchID",
+                        "FROM Orion.DiscoveryLogs WHERE ProfileID = @profile_id",
+                    ]
+                ),
+                profile_id=discovery_profile_id,
             )
-        except Exception as e:
-            module.fail_json(msg="Failed to query discovery logs: {0}".format(str(e)), **props)
-        discovery_log = discovery_log_res['results'][0]
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to query discovery logs: {0}".format(str(ex)), **props
+            )
+        discovery_log = discovery_log_res["results"][0]
 
         # Any of the below values for Result indicate a failure, so we'll abort
-        if int(discovery_log['Result']) in [0, 3, 6, 7]:
-            module.fail_json(msg="Node discovery did not complete successfully: {0}".format(str(discovery_log_res)))
+        if int(discovery_log["Result"]) in [
+            ORION_DISCOVERY_JOB_STATUS_UNKNOWN,
+            ORION_DISCOVERY_JOB_STATUS_ERROR,
+            ORION_DISCOVERY_JOB_STATUS_NOT_COMPLETED,
+            ORION_DISCOVERY_JOB_STATUS_CANCELING,
+        ]:
+            module.fail_json(
+                msg="Node discovery did not complete successfully: {0}".format(
+                    str(discovery_log_res)
+                )
+            )
 
         # Look up NodeID of node we discovered. We have to do all of these joins
         # because mysteriously, the NodeID in the DiscoveredNodes table has no
         # bearing on the actual NodeID of the host(s) discovered.
         try:
             discovered_nodes_res = self.client.query(
-                "SELECT n.NodeID, Caption, n.Uri FROM Orion.DiscoveryProfiles dp "
-                "INNER JOIN Orion.DiscoveredNodes dn ON dn.ProfileID = dp.ProfileID "
-                "INNER JOIN Orion.Nodes n ON n.DNS = dn.DNS OR n.Caption = dn.SysName "
-                "WHERE dp.Name = @discovery_name",
-                discovery_name=discovery_name
+                " ".join(
+                    [
+                        "SELECT n.NodeID, Caption, n.Uri FROM Orion.DiscoveryProfiles dp",
+                        "INNER JOIN Orion.DiscoveredNodes dn ON dn.ProfileID = dp.ProfileID",
+                        "INNER JOIN Orion.Nodes n ON n.DNS = dn.DNS OR n.Caption = dn.SysName",
+                        "WHERE dp.Name = @discovery_name",
+                    ]
+                ),
+                discovery_name=discovery_name,
             )
-        except Exception as e:
-            module.fail_json(msg="Failed to query discovered nodes: {0}".format(str(e)), **props)
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to query discovered nodes: {0}".format(str(ex)), **props
+            )
 
         try:
-            discovered_node = discovered_nodes_res['results'][0]
-        except Exception as e:
+            discovered_node = discovered_nodes_res["results"][0]
+        except Exception as ex:
             module.fail_json(
                 msg="Node '{0}' not found in discovery results (got {1}): {2}".format(
-                    module.params['node_name'],
-                    discovered_nodes_res['results'], str(e)
+                    module.params["node_name"], discovered_nodes_res["results"], str(ex)
                 ),
                 **props
             )
@@ -557,153 +720,279 @@ class OrionNode(object):
 
     def get_scheduled_list_resources_status(self, module, node, job_id):
         try:
-            return self.client.invoke("Orion.Nodes", "GetScheduledListResourcesStatus", job_id, node['node_id'])
-        except Exception as e:
-            module.fail_json(msg="Failed to get list resources job status: {0}".format(str(e)))
+            return self.client.invoke(
+                "Orion.Nodes",
+                "GetScheduledListResourcesStatus",
+                job_id,
+                node["node_id"],
+            )
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to get list resources job status: {0}".format(str(ex))
+            )
 
     def list_resources_for_node(self, module, props, node):
         # Initiate list resources job for node
         try:
-            list_resources_res = self.client.invoke("Orion.Nodes", "ScheduleListResources", node['node_id'])
+            list_resources_res = self.client.invoke(
+                "Orion.Nodes", "ScheduleListResources", node["node_id"]
+            )
             self.changed = True
-        except Exception as e:
-            module.fail_json(msg="Failed to schedule list resources job: {0}".format(str(e)), **props)
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to schedule list resources job: {0}".format(str(ex)),
+                **props
+            )
 
         job_creation_pending = True
-        job_creation_status_iter = 0
+        job_retries_iter = 0
         while job_creation_pending:
-            job_status_res = self.get_scheduled_list_resources_status(module, node, list_resources_res)
-            if job_status_res != 'Unknown':
+            job_status_res = self.get_scheduled_list_resources_status(
+                module, node, list_resources_res
+            )
+            if job_status_res != "Unknown":
                 job_creation_pending = False
             else:
-                time.sleep(DISCOVERY_RETRY_SLEEP_SECS)
-                job_creation_status_iter += 1
-                if job_creation_status_iter >= DISCOVERY_STATUS_CHECK_RETRIES:
-                    module.fail_json(msg="Timeout waiting for creation of list resources job")
+                time.sleep(LIST_RESOURCES_RETRY_SLEEP_SECS)
+                job_retries_iter += 1
+                if job_retries_iter >= LIST_RESOURCES_STATUS_CHECK_RETRIES:
+                    module.fail_json(
+                        msg="Timeout waiting for creation of ListResources job"
+                    )
 
         job_pending = True
-        job_status_iter = 0
         while job_pending:
-            job_status_res = self.get_scheduled_list_resources_status(module, node, list_resources_res)
-            if job_status_res == 'ReadyForImport':
+            job_status_res = self.get_scheduled_list_resources_status(
+                module, node, list_resources_res
+            )
+            if job_status_res == "ReadyForImport":
                 job_pending = False
             else:
-                job_status_iter += 1
-                if job_status_iter >= DISCOVERY_STATUS_CHECK_RETRIES:
-                    module.fail_json(msg="Timeout while waiting for list resources job to terminate", **props)
-                time.sleep(DISCOVERY_RETRY_SLEEP_SECS)
+                job_retries_iter += 1
+                if job_retries_iter >= LIST_RESOURCES_STATUS_CHECK_RETRIES:
+                    module.fail_json(
+                        msg="Timeout waiting for ListResources job to terminate",
+                        **props
+                    )
+                time.sleep(LIST_RESOURCES_RETRY_SLEEP_SECS)
 
         return list_resources_res
 
     def import_resources_for_node(self, module, props, node, job_id):
         # Import resources for node
         try:
-            import_resources_res = self.client.invoke("Orion.Nodes", "ImportListResourcesResult", job_id, node['node_id'])
+            import_resources_res = self.client.invoke(
+                "Orion.Nodes", "ImportListResourcesResult", job_id, node["node_id"]
+            )
             self.changed = True
-        except Exception as e:
-            module.fail_json(msg="Failed to import resources: {0}".format(str(e)), **props)
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to import resources: {0}".format(str(ex)), **props
+            )
+
+    def filter_interfaces(self, module, props, node):
+        # If we have interface filters, enumerate interfaces on the node and run
+        # filters over them.
+        if "interface_filters" in module.params:
+            # Retrieve all interfaces for node
+            try:
+                node_interfaces_res = self.client.query(
+                    " ".join(
+                        [
+                            "SELECT i.InterfaceID, i.Uri, i.Name, i.InterfaceName, i.Caption, i.FullName,",
+                            "i.Alias, i.Type, i.TypeName, i.InterfaceType, i.InterfaceTypeDescription",
+                            "FROM Orion.Nodes n JOIN Orion.NPM.Interfaces i ON i.NodeID = n.NodeID",
+                            "WHERE NodeID = @node_id",
+                        ]
+                    ),
+                    node_id=node["node_id"],
+                )
+            except Exception as ex:
+                module.fail_json(
+                    msg="Failed to query interfaces: {0}".format(str(ex)), **props
+                )
+
+            interfaces_to_remove = []
+            for entry in node_interfaces_res["results"]:
+                remove_interface = False
+                for interface_filter in module.params["interface_filters"]:
+                    if "type" in interface_filter:
+                        if re.search(
+                            interface_filter["type"],
+                            entry["InterfaceTypeDescription"],
+                            re.IGNORECASE,
+                        ):
+                            remove_interface = True
+                            break
+                    elif "name" in interface_filter:
+                        if re.search(
+                            interface_filter["name"],
+                            entry["DisplayName"],
+                            re.IGNORECASE,
+                        ):
+                            remove_interface = True
+                            break
+                if remove_interface:
+                    interfaces_to_remove.append(entry)
+            if len(interfaces_to_remove) > module.params["interface_filter_cutoff_max"]:
+                module.fail_json(
+                    msg="Too many interfaces to remove ({0}) - aborting for safety".format(
+                        str(len(interfaces_to_remove))
+                    ),
+                    **props
+                )
+
+            for interface in interfaces_to_remove:
+                try:
+                    self.client.delete(interface["Uri"])
+                except Exception as ex:
+                    module.fail_json(
+                        msg="Failed to delete interface: {0}".format(str(ex)), **props
+                    )
 
     def filter_volumes(self, module, props, node):
         # If we have volume filters, enumerate volumes on the node and run
         # filters over them.
-        if 'volume_filters' in module.params:
+        if "volume_filters" in module.params:
             # Retrieve all volumes for node
             try:
                 node_volumes_res = self.client.query(
-                    "SELECT v.VolumeId, v.Uri, v.Status, v.Caption, v.FullName, v.DisplayName, v.VolumeIndex, "
-                    "v.VolumeType, v.DeviceId, v.VolumeDescription, v.VolumeSize "
-                    "FROM Orion.Nodes n INNER JOIN Orion.Volumes v ON v.NodeID = n.NodeID WHERE NodeID = @node_id",
-                    node_id=node['node_id']
+                    " ".join(
+                        [
+                            "SELECT v.VolumeId, v.Uri, v.Status, v.Caption, v.FullName, v.DisplayName,",
+                            "v.VolumeIndex, v.VolumeType, v.DeviceId, v.VolumeDescription, v.VolumeSize",
+                            "FROM Orion.Nodes n INNER JOIN Orion.Volumes v ON v.NodeID = n.NodeID",
+                            "WHERE NodeID = @node_id",
+                        ]
+                    ),
+                    node_id=node["node_id"],
                 )
-            except Exception as e:
-                module.fail_json(msg="Failed to query volumes: {1}".format(str(e)), **props)
+            except Exception as ex:
+                module.fail_json(
+                    msg="Failed to query volumes: {0}".format(str(ex)), **props
+                )
 
             volumes_to_remove = []
-            for entry in node_volumes_res['results']:
+            for entry in node_volumes_res["results"]:
                 remove_volume = False
-                for volume_filter in module.params['volume_filters']:
-                    if 'type' in volume_filter:
-                        if re.search(volume_filter['type'], entry['VolumeType']):
+                for volume_filter in module.params["volume_filters"]:
+                    if "type" in volume_filter:
+                        if re.search(
+                            volume_filter["type"], entry["VolumeType"], re.IGNORECASE
+                        ):
                             remove_volume = True
                             break
-                    elif 'name' in volume_filter:
-                        if re.search(volume_filter['name'], entry['DisplayName']):
+                    elif "name" in volume_filter:
+                        if re.search(
+                            volume_filter["name"], entry["DisplayName"], re.IGNORECASE
+                        ):
                             remove_volume = True
                             break
                 if remove_volume:
                     volumes_to_remove.append(entry)
-            if len(volumes_to_remove) > module.params['volume_filter_cutoff_max']:
-                module.fail_json(msg="Too many volumes to remove ({0}) - aborting for safety".format(str(len(volumes_to_remove))), **props)
+            if len(volumes_to_remove) > module.params["volume_filter_cutoff_max"]:
+                module.fail_json(
+                    msg="Too many volumes to remove ({0}) - aborting for safety".format(
+                        str(len(volumes_to_remove))
+                    ),
+                    **props
+                )
 
             for volume in volumes_to_remove:
                 try:
-                    self.client.delete(volume['Uri'])
-                except Exception as e:
-                    module.fail_json(msg="Failed to delete volume: {0}".format(str(e)), **props)
+                    self.client.delete(volume["Uri"])
+                except Exception as ex:
+                    module.fail_json(
+                        msg="Failed to delete volume: {0}".format(str(ex)), **props
+                    )
 
     def set_caption(self, module, props, node):
         try:
-            self.client.update(node['uri'], caption=module.params['caption'])
-        except Exception as e:
-            module.fail_json(msg="Failed to update node Caption from '{0}' to '{1}': {2}".format(node['caption'], props['Caption'], str(e)), **props)
+            self.client.update(node["uri"], caption=module.params["caption"])
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to update node Caption from '{0}' to '{1}': {2}".format(
+                    node["caption"], props["Caption"], str(ex)
+                ),
+                **props
+            )
 
     def set_dns(self, module, props, node):
         # Set DNS name of the node
-        if 'DNS' in props:
-            dns_name_update = {
-                "DNS": props['DNS']
-            }
+        if "DNS" in props:
+            dns_name_update = {"DNS": props["DNS"]}
             try:
-                self.client.update(node['uri'], **dns_name_update)
-            except Exception as e:
-                module.fail_json(msg="Failed to set DNS name '{0}': {1}".format(props['DNS'], str(e)), **node)
+                self.client.update(node["uri"], **dns_name_update)
+            except Exception as ex:
+                module.fail_json(
+                    msg="Failed to set DNS name '{0}': {1}".format(
+                        props["DNS"], str(ex)
+                    ),
+                    **node
+                )
 
     def set_custom_properties(self, module, props, node):
-        if not props['External']:
+        if not props["External"]:
             # Add Custom Properties
-            custom_properties = module.params['custom_properties'] if 'custom_properties' in module.params else {}
+            custom_properties = (
+                module.params["custom_properties"]
+                if "custom_properties" in module.params
+                else {}
+            )
 
             if isinstance(custom_properties, dict):
                 for k in custom_properties.keys():
                     custom_property = {k: custom_properties[k]}
                     try:
-                        self.client.update(node['uri'] + "/CustomProperties", **custom_property)
+                        self.client.update(
+                            node["uri"] + "/CustomProperties", **custom_property
+                        )
                         changed = True
-                    except Exception as e:
-                        module.fail_json(msg="Failed to add custom properties: {0}".format(str(e)), **node)
+                    except Exception as ex:
+                        module.fail_json(
+                            msg="Failed to add custom properties: {0}".format(str(ex)),
+                            **node
+                        )
 
-    def add_node_agent(self, module, node, agent, props):
+    def add_node_agent(self, module, node, props):
         params = module.params
-        if not params['agent_mode'] == 'passive':
-            module.fail_json(msg="Agent mode '{0}' is not currently supported".format(params['agent_mode']), **props)
+        if not params["agent_mode"] == "passive":
+            module.fail_json(
+                msg="Agent mode '{0}' is not currently supported".format(
+                    params["agent_mode"]
+                ),
+                **props
+            )
 
-        agent_name = props['Caption']
+        agent_name = props["Caption"]
         try:
-            agent_hostname = props['DNS']
+            agent_hostname = props["DNS"]
         except Exception:
-            agent_hostname = params['node_name']
-        agent_ip_address = params['ip_address']
-        agent_port = params['agent_port']
-        shared_secret = params['agent_shared_secret']
+            agent_hostname = params["node_name"]
+        agent_ip_address = params["ip_address"]
+        agent_port = params["agent_port"]
+        shared_secret = params["agent_shared_secret"]
         proxy_id = 0
-        auto_update_enabled = params['agent_auto_update']
+        auto_update_enabled = params["agent_auto_update"]
 
         agent_args = (
             agent_name,
             agent_hostname,
             agent_ip_address,
             agent_port,
-            props['EngineID'],
+            props["EngineID"],
             shared_secret,
             proxy_id,
-            auto_update_enabled
+            auto_update_enabled,
         )
         try:
-            add_agent_res = self.client.invoke("Orion.AgentManagement.Agent", "AddPassiveAgent", *agent_args)
-        except Exception as e:
-            module.fail_json(msg="Failed to add agent: {0}".format(str(e)), **props)
+            add_agent_res = self.client.invoke(
+                "Orion.AgentManagement.Agent", "AddPassiveAgent", *agent_args
+            )
+        except Exception as ex:
+            module.fail_json(msg="Failed to add agent: {0}".format(str(ex)), **props)
 
-        # Only create node and add resources if it doesn't already exist
+        # Only create node if it doesn't already exist
         if not node:
             node_pending = True
             node_status_iter = 0
@@ -714,81 +1003,102 @@ class OrionNode(object):
                 else:
                     node_status_iter += 1
                     if node_status_iter >= AGENT_NODE_CREATION_CHECK_RETRIES:
-                        module.fail_json(msg="No more retries while waiting for node to be created for new agent", **props)
+                        module.fail_json(
+                            msg="No more retries while waiting for node to be created for new agent",
+                            **props
+                        )
                     time.sleep(AGENT_NODE_CREATION_SLEEP_SECS)
+        return node
 
-            job_id = self.list_resources_for_node(module, props, node)
-            self.import_resources_for_node(module, props, node, job_id)
+    def add_node_icmp(self, module, props):
+        try:
+            self.client.create("Orion.Nodes", **props)
+        except Exception as ex:
+            module.fail_json(msg="Failed to add node: {0}".format(str(ex)), **props)
+        node = self.node(module)
         return node
 
     def add_node_snmp_wmi(self, module, props):
+        # We use Orion node discovery as saved credentials can not be used when directly adding a node.
+        # https://thwack.solarwinds.com/product-forums/the-orion-platform/f/orion-sdk/25327/using-orion-credential-set-for-snmpv3-when-adding-node-through-sdk
+        # TODO: Enable use of credentials provided at runtime.
         self.discover_node(module, props)
         # discover_node() returns node data as an object using SWIS field names,
         # so we query the node to get the node data with internal key names.
         node = self.node(module)
         # Here we can move nodes to other polling engines after discovery.
         # For use when discovery by the desired polling engine fails.
-        if props['DiscoveryEngineID'] != props['EngineID']:
-            engine_update = {
-                "EngineID": props['EngineID']
-            }
+        if props["DiscoveryEngineID"] != props["EngineID"]:
+            engine_update = {"EngineID": props["EngineID"]}
             try:
-                self.client.update(node['uri'], **engine_update)
-            except Exception as e:
-                module.fail_json(msg="Failed to move node to final polling engine '{0}': {1}".format(module.params['polling_engine_name'], str(e)), **node)
+                self.client.update(node["uri"], **engine_update)
+            except Exception as ex:
+                module.fail_json(
+                    msg="Failed to move node to final polling engine '{0}': {1}".format(
+                        module.params["polling_engine_name"], str(ex)
+                    ),
+                    **node
+                )
         return node
 
-    def add_node(self, module, node, agent):
+    def add_node(self, module, node):
         # TODO: add ability to update an existing node
-
-        # Validate Fields
         props = self.validate_fields(module)
-
-        if module.params['polling_method'] == 'agent':
-            node = self.add_node_agent(module, node, agent, props)
-        elif module.params['polling_method'] in ['snmp', 'wmi']:
+        list_resources_required = False
+        if module.params["polling_method"] == "agent":
+            list_resources_required = True
+            node = self.add_node_agent(module, node, props)
+        elif module.params["polling_method"] in POLLING_METHODS_USING_DISCOVERY:
             node = self.add_node_snmp_wmi(module, props)
-        # TODO: external/icmp nodes
-        #  elif module.params['polling_method'] == 'external':
-            #  self.add_node_external(module, props)
-        #  elif module.params['polling_method'] == 'icmp':
-            #  self.add_node_icmp(module, props)
+        elif module.params["polling_method"] in ["external", "icmp"]:
+            node = self.add_node_icmp(module, props)
         else:
-            module.fail_json(msg="Polling method '{0}' not currently supported".format(module.params['polling_method']))
+            module.fail_json(
+                msg="Polling method '{0}' not currently supported".format(
+                    module.params["polling_method"]
+                )
+            )
 
-        # Filter interfaces and volumes, set DNS, caption, custom properties, etc
-        self.filter_volumes(module, props, node)
-        if node['caption'] != module.params['caption']:
+        # Populate node metadata first, as subsequent list resources and filtering steps may fail
+        if node["caption"] != module.params["caption"]:
             self.set_caption(module, props, node)
         self.set_dns(module, props, node)
-        if not props['External']:
+        if not props["External"]:
             self.set_custom_properties(module, props, node)
+
+        # List and import resources if required
+        if list_resources_required:
+            job_id = self.list_resources_for_node(module, props, node)
+            self.import_resources_for_node(module, props, node, job_id)
+        # Resource filtering
+        self.filter_interfaces(module, props, node)
+        self.filter_volumes(module, props, node)
 
         return dict(changed=True, msg="Node has been added")
 
     def remove_agent(self, module, agent):
         try:
-            self.client.delete(agent['uri'])
-        except Exception as e:
-            module.fail_json(msg="Error removing agent: {0}".format(str(e)), **agent)
+            self.client.delete(agent["uri"])
+        except Exception as ex:
+            module.fail_json(msg="Error removing agent: {0}".format(str(ex)), **agent)
 
     def remove_node(self, module, node):
         try:
-            self.client.delete(node['uri'])
-        except Exception as e:
-            module.fail_json(msg="Error removing node: {0}".format(str(e)), **node)
+            self.client.delete(node["uri"])
+        except Exception as ex:
+            module.fail_json(msg="Error removing node: {0}".format(str(ex)), **node)
 
     def remanage_node(self, module, node):
         try:
-            self.client.invoke("Orion.Nodes", "Remanage", node['netobject_id'])
-        except Exception as e:
-            module.fail_json(msg=to_native(e), exception=traceback.format_exc())
+            self.client.invoke("Orion.Nodes", "Remanage", node["netobject_id"])
+        except Exception as ex:
+            module.fail_json(msg=to_native(ex), exception=traceback.format_exc())
         return dict(changed=True, msg="Node has been remanaged")
 
     def unmanage_node(self, module, node):
         now_dt = datetime.now(self.utc)
-        unmanage_from = module.params['unmanage_from']
-        unmanage_until = module.params['unmanage_until']
+        unmanage_from = module.params["unmanage_from"]
+        unmanage_until = module.params["unmanage_until"]
 
         if unmanage_from:
             unmanage_from_dt = datetime.fromisoformat(unmanage_from)
@@ -800,33 +1110,36 @@ class OrionNode(object):
             tomorrow_dt = now_dt + timedelta(days=1)
             unmanage_until_dt = tomorrow_dt
 
-        if node['unmanaged']:
-            if unmanage_from_dt.isoformat() == node['unmanage_from'] and unmanage_until_dt.isoformat() == node['unmanage_until']:
+        if node["unmanaged"]:
+            if (
+                unmanage_from_dt.isoformat() == node["unmanage_from"]
+                and unmanage_until_dt.isoformat() == node["unmanage_until"]
+            ):
                 module.exit_json(changed=False)
 
         try:
             self.client.invoke(
                 "Orion.Nodes",
                 "Unmanage",
-                node['netobject_id'],
+                node["netobject_id"],
                 str(unmanage_from_dt.astimezone(self.utc)).replace("+00:00", "Z"),
                 str(unmanage_until_dt.astimezone(self.utc)).replace("+00:00", "Z"),
-                False  # use Absolute Time
+                False,  # use Absolute Time
             )
-        except Exception as e:
-            module.fail_json(msg="Failed to unmanage node: {0}".format(str(e)))
+        except Exception as ex:
+            module.fail_json(msg="Failed to unmanage node: {0}".format(str(ex)))
         return dict(
             changed=True,
             msg="Node will be unmanaged from {0} until {1}".format(
                 unmanage_from_dt.astimezone().isoformat("T", "minutes"),
-                unmanage_until_dt.astimezone().isoformat("T", "minutes")
-            )
+                unmanage_until_dt.astimezone().isoformat("T", "minutes"),
+            ),
         )
 
     def mute_node(self, module, node):
         now_dt = datetime.now(self.utc)
-        unmanage_from = module.params['unmanage_from']
-        unmanage_until = module.params['unmanage_until']
+        unmanage_from = module.params["unmanage_from"]
+        unmanage_until = module.params["unmanage_until"]
 
         if unmanage_from:
             unmanage_from_dt = datetime.fromisoformat(unmanage_from)
@@ -842,10 +1155,15 @@ class OrionNode(object):
         unmanage_until_dt = unmanage_until_dt.astimezone()
 
         # Check if already muted
-        suppressed = self.client.invoke("Orion.AlertSuppression", "GetAlertSuppressionState", [node['uri']])[0]
+        suppressed = self.client.invoke(
+            "Orion.AlertSuppression", "GetAlertSuppressionState", [node["uri"]]
+        )[0]
 
         # If already muted, return
-        if suppressed['SuppressedFrom'] == unmanage_from and suppressed['SuppressedUntil'] == unmanage_until:
+        if (
+            suppressed["SuppressedFrom"] == unmanage_from
+            and suppressed["SuppressedUntil"] == unmanage_until
+        ):
             return dict(changed=False)
 
         # Otherwise Mute Node with given parameters
@@ -853,102 +1171,113 @@ class OrionNode(object):
             self.client.invoke(
                 "Orion.AlertSuppression",
                 "SuppressAlerts",
-                [node['uri']],
+                [node["uri"]],
                 str(unmanage_from_dt.astimezone(self.utc)).replace("+00:00", "Z"),
-                str(unmanage_until_dt.astimezone(self.utc)).replace("+00:00", "Z")
+                str(unmanage_until_dt.astimezone(self.utc)).replace("+00:00", "Z"),
             )
-        except Exception as e:
-            module.fail_json(msg="Failed to mute node: {0}".format(str(e)))
+        except Exception as ex:
+            module.fail_json(msg="Failed to mute node: {0}".format(str(ex)))
         return dict(
             changed=True,
             msg="Node will be muted from {0} until {1}".format(
                 unmanage_from_dt.astimezone().isoformat("T", "minutes"),
-                unmanage_until_dt.astimezone().isoformat("T", "minutes")
-            )
+                unmanage_until_dt.astimezone().isoformat("T", "minutes"),
+            ),
         )
 
     def unmute_node(self, module, node):
         # Check if already unmuted
-        suppressed = self.client.invoke("Orion.AlertSuppression", "GetAlertSuppressionState", [node['uri']])[0]
+        suppressed = self.client.invoke(
+            "Orion.AlertSuppression", "GetAlertSuppressionState", [node["uri"]]
+        )[0]
 
-        if suppressed['SuppressionMode'] == 0:
+        if suppressed["SuppressionMode"] == 0:
             return dict(changed=False)
 
         try:
-            self.client.invoke("Orion.AlertSuppression", "ResumeAlerts", [node['uri']])
-        except Exception as e:
-            module.fail_json(msg="Failed to unmute node: {0}".format(str(e)))
-        return dict(
-            changed=True,
-            msg="Node has been unmuted"
-        )
+            self.client.invoke("Orion.AlertSuppression", "ResumeAlerts", [node["uri"]])
+        except Exception as ex:
+            module.fail_json(msg="Failed to unmute node: {0}".format(str(ex)))
+        return dict(changed=True, msg="Node has been unmuted")
 
 
 # ==============================================================
 # main
 
+
 def main():
 
     argument_spec = dict(
-        state=dict(type='str', default='remanaged', choices=['present', 'absent', 'remanaged', 'unmanaged', 'muted', 'unmuted']),
-        node_id=dict(type='str'),
-        ip_address=dict(type='str'),
-        node_name=dict(type='str'),
-        caption=dict(type='str'),
-        unmanage_from=dict(type='str', default=None),
-        unmanage_until=dict(type='str', default=None),
-        polling_method=dict(type='str', choices=['agent', 'external', 'icmp', 'snmp', 'wmi']),
-        agent_mode=dict(type='str', choices=['active', 'passive']),
-        agent_port=dict(type='int', default=17790),
-        agent_shared_secret=dict(type='str', no_log=True),
-        agent_auto_update=dict(type='bool', default=False),
-        polling_engine_id=dict(type='int'),
-        polling_engine_name=dict(type='str'),
-        discovery_polling_engine_name=dict(type='str'),
-        snmp_version=dict(type='str', default='2c', choices=['2c', '3']),
-        snmp_port=dict(type='int', default=161),
-        snmp_allow_64=dict(type='bool', default=True),
-        credential_name=dict(type='str'),
-        interface_filters=dict(type='list', elements='dict', default=[]),
-        volume_filters=dict(type='list', elements='dict', default=[]),
-        volume_filter_cutoff_max=dict(type='int', default=50),
-        custom_properties=dict(type='dict', default={})
+        state=dict(
+            type="str",
+            default="remanaged",
+            choices=["present", "absent", "remanaged", "unmanaged", "muted", "unmuted"],
+        ),
+        node_id=dict(type="str"),
+        ip_address=dict(type="str"),
+        node_name=dict(type="str"),
+        caption=dict(type="str"),
+        unmanage_from=dict(type="str", default=None),
+        unmanage_until=dict(type="str", default=None),
+        polling_method=dict(
+            type="str", choices=["agent", "external", "icmp", "snmp", "wmi"]
+        ),
+        agent_mode=dict(type="str", choices=["active", "passive"]),
+        agent_port=dict(type="int", default=17790),
+        agent_shared_secret=dict(type="str", no_log=True),
+        agent_auto_update=dict(type="bool", default=False),
+        polling_engine_id=dict(type="int"),
+        polling_engine_name=dict(type="str"),
+        discovery_polling_engine_name=dict(type="str"),
+        snmp_version=dict(type="str", default="2c", choices=["2c", "3"]),
+        snmp_port=dict(type="int", default=161),
+        snmp_allow_64=dict(type="bool", default=True),
+        credential_names=dict(type="list", elements="str", default=[]),
+        discovery_interface_filters=dict(type="list", elements="dict", default=[]),
+        interface_filters=dict(type="list", elements="dict", default=[]),
+        interface_filter_cutoff_max=dict(type="int", default=10),
+        volume_filters=dict(type="list", elements="dict", default=[]),
+        volume_filter_cutoff_max=dict(type="int", default=50),
+        custom_properties=dict(type="dict", default={}),
     )
 
     argument_spec.update(solarwindsclient_argument_spec())
 
     module = AnsibleModule(
         argument_spec=argument_spec,
-        mutually_exclusive=[['polling_engine_id', 'polling_engine_name']],
+        mutually_exclusive=[["polling_engine_id", "polling_engine_name"]],
         required_together=[],
-        required_one_of=[['node_name','ip_address']],
+        required_one_of=[["node_name", "ip_address"]],
         required_if=[
-            ['state', 'present', ['polling_method']],
-            ['state', 'muted', ['unmanage_from', 'unmanage_until']],
-            ['state', 'remanaged', ['unmanage_until']],
-            ['state', 'unmanaged', ['unmanage_from', 'unmanage_until']],
-            ['state', 'unmuted', ['unmanage_until']],
-            ['polling_method', 'agent', ['agent_mode', 'agent_port', 'agent_auto_update']],
-            ['polling_method', 'snmp', ['credential_name', 'snmp_version', 'snmp_port', 'snmp_allow_64']],
-            ['polling_method', 'wmi', ['credential_name']],
-            ['agent_mode', 'passive', ['agent_port', 'agent_shared_secret']],
+            # ["state", "present", ["polling_method"]],  # TODO: reinstate this once orion_node_facts
+            ["state", "muted", ["unmanage_from", "unmanage_until"]],
+            ["state", "remanaged", ["unmanage_until"]],
+            ["state", "unmanaged", ["unmanage_from", "unmanage_until"]],
+            ["state", "unmuted", ["unmanage_until"]],
+            [
+                "polling_method",
+                "agent",
+                ["agent_mode", "agent_port", "agent_auto_update"],
+            ],
+            [
+                "polling_method",
+                "snmp",
+                ["credential_names", "snmp_version", "snmp_port", "snmp_allow_64"],
+            ],
+            ["polling_method", "wmi", ["credential_names"]],
+            ["agent_mode", "passive", ["agent_port", "agent_shared_secret"]],
         ],
-        supports_check_mode=True
+        supports_check_mode=True,
     )
 
     if not HAS_DATEUTIL:
-        module.fail_json(msg=missing_required_lib('dateutil'), exception=DATEUTIL_IMPORT_ERROR)
+        module.fail_json(
+            msg=missing_required_lib("dateutil"), exception=DATEUTIL_IMPORT_ERROR
+        )
     if not HAS_REQUESTS:
-        module.fail_json(msg=missing_required_lib('requests'), exception=REQUESTS_IMPORT_ERROR)
-
-    state = module.params['state']
-    try:
-        caption = module.params['caption']
-    except Exception:
-        try:
-            caption = module.params['node_name']
-        except Exception:
-            caption = module.params['ip_address']
+        module.fail_json(
+            msg=missing_required_lib("requests"), exception=REQUESTS_IMPORT_ERROR
+        )
 
     solarwinds = SolarwindsClient(module)
     orion_node = OrionNode(solarwinds)
@@ -956,10 +1285,22 @@ def main():
     node = orion_node.node(module)
     agent = orion_node.agent(module)
 
-    if state == 'present':
+    try:
+        caption = module.params["caption"]
+    except Exception:
+        try:
+            caption = module.params["node_name"]
+        except Exception:
+            caption = module.params["ip_address"]
+
+    state = module.params["state"]
+    if state == "present":
         # Do nothing if the node exists and is not an agent node,
         # or is an agent node but is connected.
-        if node and (node['object_sub_type'].upper() != 'AGENT' or (agent and agent['connection_status'] == ORION_CONN_STATUS_CONNECTED)):
+        if node and (
+            node["object_sub_type"].upper() != "AGENT"
+            or (agent and agent["connection_status"] == ORION_CONN_STATUS_CONNECTED)
+        ):
             res_args = node
         else:
             # check mode: exit changed if device doesn't exist
@@ -970,8 +1311,8 @@ def main():
                 # and let it be recreated.
                 if agent:
                     orion_node.remove_agent(module, agent)
-                res_args = orion_node.add_node(module, node, agent)
-    elif state == 'absent':
+                res_args = orion_node.add_node(module, node)
+    elif state == "absent":
         if node or agent:
             # check mode: exit changed if either node or agent exists
             if module.check_mode:
@@ -983,24 +1324,25 @@ def main():
                     orion_node.remove_node(module, node)
                 res_args = dict(changed=True, msg="Node has been removed")
         else:
-            res_args = dict(changed=False, msg="Node does not exist")
+            res_args = dict(
+                changed=False, msg="Node '{0}' does not exist".format(caption)
+            )
     else:
         if not node:
             res_args = dict(
-                changed=False,
-                msg="Node '{0}' not found in solarwinds".format(caption)
+                changed=False, msg="Node '{0}' does not exist".format(caption)
             )
         else:
             if module.check_mode:
                 res_args = dict(changed=True)
             else:
-                if state == 'remanaged':
+                if state == "remanaged":
                     res_args = orion_node.remanage_node(module, node)
-                elif state == 'unmanaged':
+                elif state == "unmanaged":
                     res_args = orion_node.unmanage_node(module, node)
-                elif state == 'muted':
+                elif state == "muted":
                     res_args = orion_node.mute_node(module, node)
-                elif state == 'unmuted':
+                elif state == "unmuted":
                     res_args = orion_node.unmute_node(module, node)
 
     module.exit_json(**res_args)
