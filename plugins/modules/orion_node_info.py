@@ -277,46 +277,113 @@ class OrionNodeInfo(object):
             },
         }
 
-        node_base_fields = [
-            "NodeID",
-            "Caption",
-            "DNS",
-            "IPAddress",
-            "IPAddressType",
-            "DynamicIP",
-            "MachineType",
-            "Vendor",
-            "Description",
-            "NodeDescription",
-            "ObjectSubType",
-            "SNMPVersion",
-            "CPUCount",
-            "CPULoad",
-            "MemoryUsed",
-            "LoadAverage1",
-            "LoadAverage5",
-            "LoadAverage15",
-            "MemoryAvailable",
-            "PercentMemoryUsed",
-            "PercentMemoryAvailable",
-            "LastBoot",
-            "SystemUpTime",
-            "Location",
-            "Contact",
-            "Unmanaged",
-            "UnManageFrom",
-            "UnManageUntil",
-            "Uri",
-        ]
-        status_info_base_fields = [
-            "StatusId",
-            "StatusName",
-            "ShortDescription",
-        ]
-        base_fields = ["n." + f for f in node_base_fields] + [
-            "si." + f for f in status_info_base_fields
-        ]
-        extra_fields = []
+        base_query = {
+            "order": ["Nodes", "StatusInfo"],
+            "tables": {
+                "Nodes": {
+                    "schema": "Orion",
+                    "alias": "n",
+                    "columns": [
+                        "NodeID",
+                        "Caption",
+                        "DNS",
+                        "IPAddress",
+                        "IPAddressType",
+                        "DynamicIP",
+                        "MachineType",
+                        "Vendor",
+                        "Description",
+                        "NodeDescription",
+                        "ObjectSubType",
+                        "SNMPVersion",
+                        "CPUCount",
+                        "CPULoad",
+                        "MemoryUsed",
+                        "LoadAverage1",
+                        "LoadAverage5",
+                        "LoadAverage15",
+                        "MemoryAvailable",
+                        "PercentMemoryUsed",
+                        "PercentMemoryAvailable",
+                        "LastBoot",
+                        "SystemUpTime",
+                        "Location",
+                        "Contact",
+                        "Unmanaged",
+                        "UnManageFrom",
+                        "UnManageUntil",
+                        "Uri",
+                    ],
+                },
+                "StatusInfo": {
+                    "schema": "Orion",
+                    "alias": "si",
+                    "join": "INNER JOIN Orion.StatusInfo si ON si.StatusId = n.Status",
+                    "columns": [
+                        "StatusId",
+                        "StatusName",
+                        "ShortDescription",
+                    ],
+                },
+            },
+        }
+        # node_base_fields = [
+        #     "NodeID",
+        #     "Caption",
+        #     "DNS",
+        #     "IPAddress",
+        #     "IPAddressType",
+        #     "DynamicIP",
+        #     "MachineType",
+        #     "Vendor",
+        #     "Description",
+        #     "NodeDescription",
+        #     "ObjectSubType",
+        #     "SNMPVersion",
+        #     "CPUCount",
+        #     "CPULoad",
+        #     "MemoryUsed",
+        #     "LoadAverage1",
+        #     "LoadAverage5",
+        #     "LoadAverage15",
+        #     "MemoryAvailable",
+        #     "PercentMemoryUsed",
+        #     "PercentMemoryAvailable",
+        #     "LastBoot",
+        #     "SystemUpTime",
+        #     "Location",
+        #     "Contact",
+        #     "Unmanaged",
+        #     "UnManageFrom",
+        #     "UnManageUntil",
+        #     "Uri",
+        # ]
+        # status_info_base_fields = [
+        #     "StatusId",
+        #     "StatusName",
+        #     "ShortDescription",
+        # ]
+
+        # base_tables = [base_query["main"]["table"]] + [
+        #     t["table"] for t in base_query["supplementary_tables"]
+        # ]
+        # return dict(changed=False, msg=str(base_tables))
+        base_columns = []
+        for t in base_query["tables"].keys():
+            for c in base_query["tables"][t]["columns"]:
+                base_columns.append(".".join([base_query["tables"][t]["alias"], c]))
+            # base_columns.append(
+            #     ".".join([base_query["tables"][t]["alias"], c])
+            #     for c in base_query["tables"][t]["columns"]
+            # )
+        extra_columns = []
+
+        # return dict(changed=False, msg=str(base_columns))
+
+        # base_fields = ["n." + f for f in base_query["main"]["columns"]] + [
+        #     "si." + f for f in status_info_base_fields
+        # ]
+        # extra_fields = []
         # return dict(changed=False, msg=module.argument_spec)
 
         criteria = ""
@@ -390,23 +457,36 @@ class OrionNodeInfo(object):
                 if criteria:
                     criteria = " ".join([criteria, "AND "])
                 criteria += "(" + field_criteria.strip() + ")"
-                extra_field = ".".join([table_alias, column])
-                if extra_field not in base_fields + extra_fields:
-                    extra_fields.append(extra_field)
+                extra_column = ".".join([table_alias, column])
+                if extra_column not in base_columns + extra_columns:
+                    extra_columns.append(extra_column)
 
-        projection = ", ".join(base_fields + extra_fields)
-        tables = ["Orion.Nodes n"]
-        tables.append("INNER JOIN Orion.StatusInfo si ON si.StatusId = n.Status")
+        projection = ", ".join(base_columns + extra_columns)
+
+        tables_spec = []
+        for t in base_query["tables"].keys():
+            if "join" in base_query["tables"][t] and base_query["tables"][t]["join"]:
+                table_ref = base_query["tables"][t]["join"]
+            else:
+                table_ref = " ".join(
+                    [
+                        ".".join([base_query["tables"][t]["schema"], t]),
+                        base_query["tables"][t]["alias"],
+                    ]
+                )
+            tables_spec.append(table_ref)
+        # tables = ["Orion.Nodes n"]
+        # tables.append("INNER JOIN Orion.StatusInfo si ON si.StatusId = n.Status")
         if params["custom_properties"]:
-            tables.append(
+            tables_spec.append(
                 "INNER JOIN Orion.NodesCustomProperties cp ON cp.NodeID = n.NodeID"
             )
-        from_clause = " ".join(["FROM", " ".join(tables)])
+        from_clause = " ".join(["FROM", " ".join(tables_spec)])
         where_clause = " ".join(["WHERE", criteria])
 
         query = " ".join(["SELECT", projection, from_clause, where_clause])
 
-        # return dict(changed=False, msg=query)
+        return dict(changed=False, msg=query)
 
         try:
             query_res = self.solarwinds.client.query(query)
