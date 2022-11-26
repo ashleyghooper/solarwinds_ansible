@@ -259,6 +259,10 @@ class OrionNodeInfo(object):
                 "table_alias": "n",
                 "column": "SNMPVersion",
             },
+            "status": {
+                "table_alias": "si",
+                "column": "StatusName",
+            },
             "sys_name": {
                 "table_alias": "n",
                 "column": "SysName",
@@ -267,17 +271,50 @@ class OrionNodeInfo(object):
                 "table_alias": "n",
                 "column": "Unmanaged",
             },
+            "vendor": {
+                "table_alias": "n",
+                "column": "Vendor",
+            },
         }
 
-        base_fields = [
-            "n.NodeID",
-            "n.Caption",
-            "n.DNS",
-            "n.Unmanaged",
-            "n.UnManageFrom",
-            "n.UnManageUntil",
-            "n.Uri",
-            "n.ObjectSubType",
+        node_base_fields = [
+            "NodeID",
+            "Caption",
+            "DNS",
+            "IPAddress",
+            "IPAddressType",
+            "DynamicIP",
+            "MachineType",
+            "Vendor",
+            "Description",
+            "NodeDescription",
+            "ObjectSubType",
+            "SNMPVersion",
+            "CPUCount",
+            "CPULoad",
+            "MemoryUsed",
+            "LoadAverage1",
+            "LoadAverage5",
+            "LoadAverage15",
+            "MemoryAvailable",
+            "PercentMemoryUsed",
+            "PercentMemoryAvailable",
+            "LastBoot",
+            "SystemUpTime",
+            "Location",
+            "Contact",
+            "Unmanaged",
+            "UnManageFrom",
+            "UnManageUntil",
+            "Uri",
+        ]
+        status_info_base_fields = [
+            "StatusId",
+            "StatusName",
+            "ShortDescription",
+        ]
+        base_fields = ["n." + f for f in node_base_fields] + [
+            "si." + f for f in status_info_base_fields
         ]
         extra_fields = []
         # return dict(changed=False, msg=module.argument_spec)
@@ -287,7 +324,9 @@ class OrionNodeInfo(object):
         params = module.params
         for k in criteria_arguments:
             field_criteria = ""
-            if k in params and (params[k] or isinstance(params[k], bool)):
+            if k in params and (
+                params[k] or isinstance(params[k], bool or isinstance(params[k], str))
+            ):
                 table_alias = criteria_arguments[k]["table_alias"]
                 if argument_spec[k]["type"] != "dict":
                     column = criteria_arguments[k]["column"]
@@ -302,11 +341,26 @@ class OrionNodeInfo(object):
                     elif argument_spec[k]["type"] == "bool":
                         if isinstance(element, bool):
                             match = str(element)
-                        else:
+                        elif isinstance(element, str):
                             match = (
                                 "True"
                                 if str(element).lower() in ["yes", "on", "true"]
                                 else "False"
+                            )
+                        else:
+                            module.fail_json(
+                                msg="Field '{0}' should be boolean: {1}".format(
+                                    k, str(ex)
+                                )
+                            )
+                    elif argument_spec[k]["type"] == "str":
+                        if isinstance(element, str):
+                            match = str(element)
+                        else:
+                            module.fail_json(
+                                msg="Field '{0}' should be string: {1}".format(
+                                    k, str(ex)
+                                )
                             )
                     else:
                         match = element
@@ -342,6 +396,7 @@ class OrionNodeInfo(object):
 
         projection = ", ".join(base_fields + extra_fields)
         tables = ["Orion.Nodes n"]
+        tables.append("INNER JOIN Orion.StatusInfo si ON si.StatusId = n.Status")
         if params["custom_properties"]:
             tables.append(
                 "INNER JOIN Orion.NodesCustomProperties cp ON cp.NodeID = n.NodeID"
@@ -381,7 +436,9 @@ def main():
         object_sub_type=dict(type="list", elements="str", default=[]),
         snmp_version=dict(type="list", elements="str", default=[]),
         sys_name=dict(type="list", elements="str", default=[]),
+        status=dict(type="str"),
         unmanaged=dict(type="bool"),
+        vendor=dict(type="str"),
         # max_items=dict(type="int"),
         # node_id=dict(type="str"),
         # ip_address=dict(type="str"),
