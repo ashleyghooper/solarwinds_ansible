@@ -241,6 +241,7 @@ from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarw
 # Basic UTC timezone for python2.7 compatibility
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.utc import UTC
 
+DATEUTIL_IMPORT_ERROR = None
 try:
     from dateutil.parser import parse
 except ImportError:
@@ -249,6 +250,7 @@ except ImportError:
 else:
     HAS_DATEUTIL = True
 
+REQUESTS_IMPORT_ERROR = None
 try:
     import requests
 
@@ -357,7 +359,16 @@ class OrionNode(object):
         node = None
         results = None
         params = module.params
-        base_query_node = "SELECT NodeID, Caption, Unmanaged, UnManageFrom, UnManageUntil, Uri, ObjectSubType FROM Orion.Nodes"
+        base_query_node = " ".join(
+            [
+                "SELECT OrionIDPrefix, NodeID, Caption, DNS, IPAddress,",
+                "IPAddressType, Description, NodeDescription, MachineType,",
+                "StatusDescription, SystemUpTime, Vendor, Location, Contact,",
+                "ObjectSubType, SNMPVersion, Uri, EngineID,",
+                "Unmanaged, UnManageFrom, UnManageUntil",
+                "FROM Orion.Nodes",
+            ]
+        )
         if params["node_id"] is not None:
             results = self.client.query(
                 " ".join([base_query_node, "WHERE NodeID = @node_id"]),
@@ -385,17 +396,30 @@ class OrionNode(object):
             if "results" in results and results["results"]:
                 rec = results["results"][0]
                 node = {
-                    "node_id": int(rec["NodeID"]),
+                    "node_id": rec["NodeID"],
                     "caption": rec["Caption"],
-                    "netobject_id": "N:{0}".format(rec["NodeID"]),
+                    "dns_name": rec["DNS"],
+                    "ip_address": rec["IPAddress"],
+                    "ip_address_type": rec["IPAddressType"],
+                    "description": rec["Description"],
+                    "node_description": rec["NodeDescription"],
+                    "machine_type": rec["MachineType"],
+                    "status_description": rec["StatusDescription"],
+                    "system_up_time": rec["SystemUpTime"],
+                    "vendor": rec["Vendor"],
+                    "location": rec["Location"],
+                    "contact": rec["Contact"],
+                    "object_sub_type": rec["ObjectSubType"],
+                    "snmp_version": rec["SNMPVersion"],
+                    "netobject_id": "{0}{1}".format(
+                        rec["OrionIDPrefix"], rec["NodeID"]
+                    ),
+                    "uri": rec["Uri"],
+                    "engine_id": rec["EngineID"],
                     "unmanaged": rec["Unmanaged"],
                     "unmanage_from": parse(rec["UnManageFrom"]).isoformat(),
                     "unmanage_until": parse(rec["UnManageUntil"]).isoformat(),
-                    "uri": rec["Uri"],
-                    "object_sub_type": rec["ObjectSubType"],
                 }
-                if "DNS" in results["results"][0]:
-                    node["dns_name"] = rec["DNS"]
         return node
 
     def validate_fields(self, module):
@@ -1074,7 +1098,7 @@ class OrionNode(object):
         self.filter_interfaces(module, props, node)
         self.filter_volumes(module, props, node)
 
-        return dict(changed=True, msg="Node has been added")
+        return dict(changed=True, msg="Node has been added", node=node)
 
     def remove_agent(self, module, agent):
         try:
@@ -1093,7 +1117,7 @@ class OrionNode(object):
             self.client.invoke("Orion.Nodes", "Remanage", node["netobject_id"])
         except Exception as ex:
             module.fail_json(msg=to_native(ex), exception=traceback.format_exc())
-        return dict(changed=True, msg="Node has been remanaged")
+        return dict(changed=True, msg="Node has been remanaged", node=node)
 
     def unmanage_node(self, module, node):
         now_dt = datetime.now(self.utc)
@@ -1115,7 +1139,7 @@ class OrionNode(object):
                 unmanage_from_dt.isoformat() == node["unmanage_from"]
                 and unmanage_until_dt.isoformat() == node["unmanage_until"]
             ):
-                module.exit_json(changed=False)
+                module.exit_json(changed=False, node=node)
 
         try:
             self.client.invoke(
@@ -1125,6 +1149,7 @@ class OrionNode(object):
                 str(unmanage_from_dt.astimezone(self.utc)).replace("+00:00", "Z"),
                 str(unmanage_until_dt.astimezone(self.utc)).replace("+00:00", "Z"),
                 False,  # use Absolute Time
+                node=node,
             )
         except Exception as ex:
             module.fail_json(msg="Failed to unmanage node: {0}".format(str(ex)))
@@ -1134,6 +1159,7 @@ class OrionNode(object):
                 unmanage_from_dt.astimezone().isoformat("T", "minutes"),
                 unmanage_until_dt.astimezone().isoformat("T", "minutes"),
             ),
+            node=node,
         )
 
     def mute_node(self, module, node):
@@ -1164,7 +1190,7 @@ class OrionNode(object):
             suppressed["SuppressedFrom"] == unmanage_from
             and suppressed["SuppressedUntil"] == unmanage_until
         ):
-            return dict(changed=False)
+            return dict(changed=False, node=node)
 
         # Otherwise Mute Node with given parameters
         try:
@@ -1183,6 +1209,7 @@ class OrionNode(object):
                 unmanage_from_dt.astimezone().isoformat("T", "minutes"),
                 unmanage_until_dt.astimezone().isoformat("T", "minutes"),
             ),
+            node=node,
         )
 
     def unmute_node(self, module, node):
@@ -1192,13 +1219,13 @@ class OrionNode(object):
         )[0]
 
         if suppressed["SuppressionMode"] == 0:
-            return dict(changed=False)
+            return dict(changed=False, node=node)
 
         try:
             self.client.invoke("Orion.AlertSuppression", "ResumeAlerts", [node["uri"]])
         except Exception as ex:
             module.fail_json(msg="Failed to unmute node: {0}".format(str(ex)))
-        return dict(changed=True, msg="Node has been unmuted")
+        return dict(changed=True, msg="Node has been unmuted", node=node)
 
 
 # ==============================================================
@@ -1249,7 +1276,7 @@ def main():
         required_together=[],
         required_one_of=[["node_name", "ip_address"]],
         required_if=[
-            # ["state", "present", ["polling_method"]],  # TODO: reinstate this once orion_node_facts
+            # ["state", "present", ["polling_method"]],  # TODO: reinstate this once orion_node_info
             ["state", "muted", ["unmanage_from", "unmanage_until"]],
             ["state", "remanaged", ["unmanage_until"]],
             ["state", "unmanaged", ["unmanage_from", "unmanage_until"]],
@@ -1305,7 +1332,7 @@ def main():
         else:
             # check mode: exit changed if device doesn't exist
             if module.check_mode:
-                module.exit_json(changed=True)
+                module.exit_json(changed=True, node=node)
             else:
                 # If we have an agent but no node, nix the agent
                 # and let it be recreated.
@@ -1322,19 +1349,23 @@ def main():
                     orion_node.remove_agent(module, agent)
                 if node:
                     orion_node.remove_node(module, node)
-                res_args = dict(changed=True, msg="Node has been removed")
+                res_args = dict(changed=True, msg="Node has been removed", node=node)
         else:
             res_args = dict(
-                changed=False, msg="Node '{0}' does not exist".format(caption)
+                changed=False,
+                msg="Node '{0}' does not exist".format(caption),
+                node=node,
             )
     else:
         if not node:
             res_args = dict(
-                changed=False, msg="Node '{0}' does not exist".format(caption)
+                changed=False,
+                msg="Node '{0}' does not exist".format(caption),
+                node=node,
             )
         else:
             if module.check_mode:
-                res_args = dict(changed=True)
+                res_args = dict(changed=True, node=node)
             else:
                 if state == "remanaged":
                     res_args = orion_node.remanage_node(module, node)

@@ -14,6 +14,7 @@ import traceback
 
 from ansible.module_utils.basic import missing_required_lib
 
+ORIONSDK_IMPORT_ERROR = None
 try:
     from orionsdk import SwisClient
 except ImportError:

@@ -133,3 +133,6 @@ dmypy.json
 
 # gzipped tarballs as created by ansible-galaxy
 *.tar.gz
+
+# vscode
+.vscode
