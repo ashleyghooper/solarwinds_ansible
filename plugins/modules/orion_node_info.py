@@ -244,6 +244,10 @@ from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarw
     solarwindsclient_argument_spec,
 )
 
+from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.model import (
+    Model,
+)
+
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.query_builder import (
     QueryBuilder,
 )
@@ -363,35 +367,31 @@ class OrionNodeInfo(object):
             return None
 
     def nodes(self, module):
-        columns = []
-        table_map = dict(
-            Nodes=dict(alias="n", boolean_columns=["Allow64BitCounters", "Unmanaged"]),
-            Agents=dict(
-                alias="a",
-                join="Orion.AgentManagement.Agent a ON a.NodeID = n.NodeID",
-                boolean_columns=["AutoUpdateEnabled"],
-            ),
-            CustomProperties=dict(
-                alias="cp",
-                join="Orion.NodesCustomProperties cp ON cp.NodeID = n.NodeID",
-            ),
-        )
-        for table in table_map:
-            table_def = table_map[table]
-            for column in module.params["columns"][table]:
-                columns.append(".".join([table_def["alias"], column]))
-
-        query = QueryBuilder().SELECT(*columns).FROM("Orion.Nodes AS n")
+        model = Model(self.solarwinds, module.params["columns"])
+        query_columns = model.query_columns()
+        query = QueryBuilder().SELECT(*query_columns).FROM("Orion.Nodes AS n")
 
         if "filters" in module.params:
-            for table in table_map:
-                table_def = table_map[table]
+            for table in model.tables:
+                table_class = model.table_instances[table]
+                alias = table_class.alias
                 if (
                     table in module.params["filters"]
                     and module.params["filters"][table] != {}
                 ):
                     if table != "Nodes":
-                        query.JOIN(table_def["join"])
+                        left, right = table_class.joins["Nodes"]
+                        query.INNER_JOIN(
+                            "{0}.{1} AS {2} ON {3}.{4} = {5}.{6}".format(
+                                table_class.schema,
+                                table,
+                                alias,
+                                alias,
+                                left,
+                                "n",
+                                right,
+                            )
+                        )
                     table_filters = module.params["filters"][table]
                     for column in [
                         f for f in table_filters if f is not None and f != []
@@ -412,8 +412,8 @@ class OrionNodeInfo(object):
                             comparator = "LIKE"
                             wrap = "'"
                             if (
-                                "boolean_columns" in table_def
-                                and column in table_def["boolean_columns"]
+                                hasattr(table_class, "boolean_columns")
+                                and column in table_class.boolean_columns
                             ):
                                 comparator = "="
                                 if isinstance(element, bool):
@@ -458,7 +458,7 @@ class OrionNodeInfo(object):
                                 column_criteria = " ".join([column_criteria, "OR"])
                             column_criteria += " ".join(
                                 [
-                                    ".".join([table_def["alias"], column]),
+                                    ".".join([alias, column]),
                                     comparator,
                                     criterion,
                                 ]
@@ -466,7 +466,7 @@ class OrionNodeInfo(object):
 
                             query.WHERE("({0})".format(column_criteria))
 
-        # module.fail_json(msg="{0}\n{1}".format(filter_debug, str(query)))
+        # module.fail_json(msg="{0}".format(str(query)))
 
         # from_where = [" ".join(["FROM", " ".join(tables_spec)])]
         # if len(criteria.strip()) > 0:
@@ -534,7 +534,7 @@ def main():
                     default=["NodeID", "Caption", "DNS", "IPAddress", "Uri"],
                 ),
                 Agents=dict(type="list", default=[]),
-                CustomProperties=dict(type="list", default=[]),
+                NodesCustomProperties=dict(type="list", default=[]),
             ),
         ),
         filters=dict(
@@ -566,7 +566,7 @@ def main():
                     ),
                 ),
                 Agents=dict(type="dict", default={}),
-                CustomProperties=dict(type="dict", default={})
+                NodesCustomProperties=dict(type="dict", default={})
                 # agent=dict(type="dict", default={}),
                 # caption=dict(type="list", elements="str", default=[]),
                 # custom_properties=dict(type="dict", default={}),

@@ -18,18 +18,18 @@ from typing import NamedTuple
 
 class QueryBuilder(object):
     """
-    Generic SQL Query Builder.
+    Generic SQL query builder for Python, heavily based on
+    https://death.andgravity.com/query-builder-how with minor tweaks to suit
+    the SolarWinds Information Service SQL dialect.
     """
 
     keywords = [
-        "WITH",
         "SELECT",
         "FROM",
         "WHERE",
         "GROUP BY",
         "HAVING",
         "ORDER BY",
-        "LIMIT",
     ]
 
     separators = dict(WHERE="AND", HAVING="AND")
@@ -62,7 +62,7 @@ class QueryBuilder(object):
 
         if flag:
             if target.flag:
-                raise ValueError(f"{keyword} already has flag: {flag!r}")
+                raise ValueError("{0} already has flag: {1!r}".format(keyword, flag))
             target.flag = flag
 
         kwargs = {}
@@ -86,7 +86,7 @@ class QueryBuilder(object):
         prefix, _, flag = keyword.partition(" ")
         if prefix in self.flag_keywords:
             if flag and flag not in self.flag_keywords[prefix]:
-                raise ValueError(f"invalid flag for {prefix}: {flag!r}")
+                raise ValueError("invalid flag for {0}: {1!r}".format(prefix, flag))
             return prefix, flag
         return keyword, ""
 
@@ -96,9 +96,9 @@ class QueryBuilder(object):
         return functools.partial(self.add, name.replace("_", " "))
 
     def __str__(self):
-        return " ".join(self._lines())
+        return " ".join(self._parts())
 
-    def _lines(self):
+    def _parts(self):
         for keyword, things in self.data.items():
             if not things:
                 continue
@@ -112,9 +112,9 @@ class QueryBuilder(object):
             for thing in things:
                 grouped[bool(thing.keyword)].append(thing)
             for group in grouped:
-                yield from self._lines_keyword(keyword, group)
+                yield from self._parts_keyword(keyword, group)
 
-    def _lines_keyword(self, keyword, things):
+    def _parts_keyword(self, keyword, things):
         for i, thing in enumerate(things, 1):
             last = i == len(things)
 
@@ -145,7 +145,7 @@ class _Thing(NamedTuple):
         elif len(arg) == 2:
             alias, value = arg
         else:
-            raise ValueError(f"invalid arg: {arg!r}")
+            raise ValueError("invalid arg: {0!r}".format(arg))
         return cls(_clean_up(value), _clean_up(alias), **kwargs)
 
 
