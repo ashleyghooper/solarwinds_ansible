@@ -159,3 +159,115 @@ class SolarwindsClient(object):
                     polling_engine_name, str(ex)
                 )
             )
+
+    def relationships(self, module, source_table, target_tables):
+        """Retrieve table relationships for the given types from the Metadata.Relationship table.
+        Returns:
+            a list of relationships if found, or None
+        """
+        try:
+            table_filters = " ".join(
+                [
+                    ("OR " if i > 0 else "")
+                    + "('{0}' IN (SourceType, TargetType) AND '{1}' IN (SourceType, TargetType))".format(
+                        source_table, t
+                    )
+                    for i, t in enumerate(
+                        [t for t in target_tables if t != source_table]
+                    )
+                ]
+            )
+            # module.fail_json(
+            #     msg="{0}\n{1}\n{2}".format(
+            #         source_type, str(target_types), entity_filters
+            #     )
+            # )
+            relationships_res = self._client.query(
+                " ".join(
+                    [
+                        "SELECT SourceType, TargetType, SourcePrimaryKeyNames,",
+                        "SourceForeignKeyNames, SourceCardinalityMin,",
+                        "SourceCardinalityMax, TargetPrimaryKeyNames,",
+                        "TargetForeignKeyNames, TargetCardinalityMin,",
+                        "TargetCardinalityMax",
+                        "FROM Metadata.Relationship",
+                        "WHERE InstanceType = 'Metadata.Relationship'",
+                        "AND (",
+                        table_filters,
+                        ")",
+                    ]
+                )
+            )
+            table_relations = [
+                t["TargetType"]
+                for t in relationships_res["results"]
+                if t["SourceType"] == source_table
+            ]
+            table_relations_set = set(table_relations)
+            unmatched_tables = [
+                t for t in target_tables if t not in table_relations_set
+            ]
+            if unmatched_tables:
+                raise Exception(
+                    "No relationship found between entities '{0}' and {1}".format(
+                        source_table, str(unmatched_tables)
+                    )
+                )
+            return {
+                r["TargetType"]: [
+                    t
+                    for t in relationships_res["results"]
+                    if t["SourceType"] == source_table
+                ]
+                for r in relationships_res["results"]
+            }
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to retrieve table relationships between '{0}' and {1}: {2}".format(
+                    source_table, str(target_tables), str(ex)
+                )
+            )
+
+    def properties(self, module, tables):
+        """Retrieve the list of properties for a list of tables from the Metadata.Property table.
+        Returns:
+            a dictionary of tables each containing a dictionary of columns, or None
+        """
+        try:
+            table_filters = "".join(
+                [
+                    (", " if i > 0 else "") + "'{0}'".format(t)
+                    for i, t in enumerate(tables)
+                ]
+            )
+            properties_res = self._client.query(
+                " ".join(
+                    [
+                        "SELECT EntityName, Name, Type, IsMetric, Units, MaxValue,",
+                        "MinValue, Values, IsNavigable, IsKey, IsNullable,",
+                        "IsInherited, IsInjected, IsSortable, GroupBy,",
+                        "FilterBy, CanCreate, CanRead, CanUpdate, Events,",
+                        "DisplayName, Description, InstanceType, Uri,",
+                        "InstanceSiteId",
+                        "FROM Metadata.Property",
+                        "WHERE EntityName IN (",
+                        table_filters,
+                        ")",
+                        "AND IsNavigable = false",
+                    ]
+                )
+            )
+            return {
+                r["EntityName"]: {
+                    p["Name"]: p
+                    for p in properties_res["results"]
+                    if p["EntityName"] == r["EntityName"]
+                }
+                for r in properties_res["results"]
+            }
+        except Exception as ex:
+            module.fail_json(
+                msg="Failed to retrieve entity properties for {0}: {1}".format(
+                    str(tables), str(ex)
+                )
+            )

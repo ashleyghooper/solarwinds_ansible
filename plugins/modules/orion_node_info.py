@@ -367,6 +367,66 @@ class OrionNodeInfo(object):
             return None
 
     def nodes(self, module):
+        base_table = "Orion.Nodes"
+        if "filters" in module.params and module.params["filters"] != {}:
+            extra_tables_filtering = [
+                t for t in module.params["filters"].keys() if t != base_table
+            ]
+
+        if "columns" in module.params and module.params["columns"] != []:
+            extra_tables_projecting = [
+                t for t in module.params["columns"].keys() if t != base_table
+            ]
+
+        extra_tables = list(set(extra_tables_filtering) | set(extra_tables_projecting))
+        query_tables = [base_table] + extra_tables
+
+        relationships = self.solarwinds.relationships(module, base_table, extra_tables)
+        properties = self.solarwinds.properties(module, query_tables)
+
+        # module.fail_json(msg="Properties: {0}".format(str(properties)))
+
+        for table in extra_tables:
+            for property in list(
+                set(
+                    module.params["columns"][table]
+                    if table in module.params["columns"]
+                    else []
+                )
+                | set(
+                    [t for t in module.params["filters"][table]]
+                    if table in module.params["filters"]
+                    else []
+                )
+            ):
+                if property not in properties[table]:
+                    module.fail_json(
+                        msg="Property '{0}' was not found in table '{1}'".format(
+                            property, table
+                        )
+                    )
+
+        projected_columns = {}
+        for table in query_tables:
+            if table in module.params["columns"]:
+                pass
+
+            columns = []
+            if (
+                table in module.params["columns"]
+                and isinstance(module.params["columns"][table], list)
+                and module.params["columns"][table] != []
+            ):
+                columns.append(
+                    [
+                        ".".join("".join([u for u in table if u.isupper()]).lower(), c)
+                        for c in module.params["columns"][table]
+                    ]
+                )
+            else:
+                pass
+            projected_columns[table] = columns
+
         model = Model(self.solarwinds, module.params["columns"])
         query_columns = model.query_columns()
         query = QueryBuilder().SELECT(*query_columns).FROM("Orion.Nodes AS n")
@@ -528,78 +588,80 @@ def main():
     argument_spec = dict(
         columns=dict(
             type="dict",
-            options=dict(
-                Nodes=dict(
-                    type="list",
-                    default=["NodeID", "Caption", "DNS", "IPAddress", "Uri"],
-                ),
-                Agents=dict(type="list", default=[]),
-                NodesCustomProperties=dict(type="list", default=[]),
-            ),
         ),
+        #     options=dict(
+        #         Nodes=dict(
+        #             type="list",
+        #             default=["NodeID", "Caption", "DNS", "IPAddress", "Uri"],
+        #         ),
+        #         Agents=dict(type="list", default=[]),
+        #         NodesCustomProperties=dict(type="list", default=[]),
+        #     ),
+        # ),
         filters=dict(
             type="dict",
-            options=dict(
-                Nodes=dict(
-                    type="dict",
-                    options=dict(
-                        Caption=dict(type="list", elements="str", default=[]),
-                        DNS=dict(type="list", elements="str", default=[]),
-                        IPAddress=dict(type="list", elements="str", default=[]),
-                        IsServer=dict(type="bool"),
-                        MachineType=dict(type="list", elements="str", default=[]),
-                        NodeDescription=dict(type="list", elements="str", default=[]),
-                        NodeID=dict(type="list", elements="int", default=[]),
-                        ObjectSubType=dict(
-                            type="list",
-                            elements="str",
-                            choices=["Agent", "ICMP", "SNMP", "WMI"],
-                            default=[],
-                        ),
-                        EngineID=dict(type="list", elements="int", default=[]),
-                        SNMPVersion=dict(
-                            type="list",
-                            elements="int",
-                            choices=[0, 1, 2, 3],
-                            default=[],
-                        ),
-                    ),
-                ),
-                Agents=dict(type="dict", default={}),
-                NodesCustomProperties=dict(type="dict", default={})
-                # agent=dict(type="dict", default={}),
-                # caption=dict(type="list", elements="str", default=[]),
-                # custom_properties=dict(type="dict", default={}),
-                # dns=dict(type="list", elements="str", default=[]),
-                # ip_address=dict(type="list", elements="str", default=[]),
-                # is_server=dict(type="bool"),
-                # machine_type=dict(type="list", elements="str", default=[]),
-                # node_description=dict(type="list", elements="str", default=[]),
-                # node_id=dict(type="list", elements="int", default=[]),
-                # object_sub_type=dict(
-                #     type="list",
-                #     elements="str",
-                #     choices=["agent", "icmp", "snmp", "wmi"],
-                #     default=[],
-                # ),
-                # polling_engine_id=dict(type="list", elements="int", default=[]),
-                # polling_method=dict(
-                #     type="list",
-                #     elements="str",
-                #     choices=["agent", "icmp", "snmp", "wmi"],
-                #     default=[],
-                # ),
-                # severity_max=dict(type="int"),
-                # severity_min=dict(type="int"),
-                # snmp_version=dict(
-                #     type="list", elements="int", choices=[0, 1, 2, 3], default=[]
-                # ),
-                # status=dict(type="list", elements="str", default=[]),
-                # sys_name=dict(type="list", elements="str", default=[]),
-                # unmanaged=dict(type="bool"),
-                # vendor=dict(type="list", elements="str", default=[]),
-            ),
         ),
+        # options=dict(
+        #     Nodes=dict(
+        #         type="dict",
+        #         options=dict(
+        #             Caption=dict(type="list", elements="str", default=[]),
+        #             DNS=dict(type="list", elements="str", default=[]),
+        #             IPAddress=dict(type="list", elements="str", default=[]),
+        #             IsServer=dict(type="bool"),
+        #             MachineType=dict(type="list", elements="str", default=[]),
+        #             NodeDescription=dict(type="list", elements="str", default=[]),
+        #             NodeID=dict(type="list", elements="int", default=[]),
+        #             ObjectSubType=dict(
+        #                 type="list",
+        #                 elements="str",
+        #                 choices=["Agent", "ICMP", "SNMP", "WMI"],
+        #                 default=[],
+        #             ),
+        #             EngineID=dict(type="list", elements="int", default=[]),
+        #             SNMPVersion=dict(
+        #                 type="list",
+        #                 elements="int",
+        #                 choices=[0, 1, 2, 3],
+        #                 default=[],
+        #             ),
+        #         ),
+        #     ),
+        #     Agents=dict(type="dict", default={}),
+        #     NodesCustomProperties=dict(type="dict", default={})
+        # agent=dict(type="dict", default={}),
+        # caption=dict(type="list", elements="str", default=[]),
+        # custom_properties=dict(type="dict", default={}),
+        # dns=dict(type="list", elements="str", default=[]),
+        # ip_address=dict(type="list", elements="str", default=[]),
+        # is_server=dict(type="bool"),
+        # machine_type=dict(type="list", elements="str", default=[]),
+        # node_description=dict(type="list", elements="str", default=[]),
+        # node_id=dict(type="list", elements="int", default=[]),
+        # object_sub_type=dict(
+        #     type="list",
+        #     elements="str",
+        #     choices=["agent", "icmp", "snmp", "wmi"],
+        #     default=[],
+        # ),
+        # polling_engine_id=dict(type="list", elements="int", default=[]),
+        # polling_method=dict(
+        #     type="list",
+        #     elements="str",
+        #     choices=["agent", "icmp", "snmp", "wmi"],
+        #     default=[],
+        # ),
+        # severity_max=dict(type="int"),
+        # severity_min=dict(type="int"),
+        # snmp_version=dict(
+        #     type="list", elements="int", choices=[0, 1, 2, 3], default=[]
+        # ),
+        # status=dict(type="list", elements="str", default=[]),
+        # sys_name=dict(type="list", elements="str", default=[]),
+        # unmanaged=dict(type="bool"),
+        # vendor=dict(type="list", elements="str", default=[]),
+        # ),
+        # ),
     )
 
     argument_spec.update(solarwindsclient_argument_spec())

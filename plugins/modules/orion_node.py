@@ -718,8 +718,11 @@ class OrionNode(object):
                 " ".join(
                     [
                         "SELECT n.NodeID, Caption, n.Uri FROM Orion.DiscoveryProfiles dp",
-                        "INNER JOIN Orion.DiscoveredNodes dn ON dn.ProfileID = dp.ProfileID",
-                        "INNER JOIN Orion.Nodes n ON n.DNS = dn.DNS OR n.Caption = dn.SysName",
+                        "INNER JOIN Orion.DiscoveredNodes dn"
+                        "ON dn.ProfileID = dp.ProfileID AND dn.InstanceSiteID = dp.InstanceSiteID",
+                        "INNER JOIN Orion.Nodes n",
+                        "ON ((n.DNS = dn.DNS AND n.InstanceSiteID = dn.InstanceSiteID)",
+                        "OR (n.Caption = dn.SysName AND n.InstanceSiteID = dn.InstanceSiteID))",
                         "WHERE dp.Name = @discovery_name",
                     ]
                 ),
@@ -825,7 +828,8 @@ class OrionNode(object):
                         [
                             "SELECT i.InterfaceID, i.Uri, i.Name, i.InterfaceName, i.Caption, i.FullName,",
                             "i.Alias, i.Type, i.TypeName, i.InterfaceType, i.InterfaceTypeDescription",
-                            "FROM Orion.Nodes n JOIN Orion.NPM.Interfaces i ON i.NodeID = n.NodeID",
+                            "FROM Orion.Nodes n INNER JOIN Orion.NPM.Interfaces i",
+                            "ON i.NodeID = n.NodeID AND i.InstanceSiteID = n.InstanceSiteID",
                             "WHERE NodeID = @node_id",
                         ]
                     ),
@@ -885,7 +889,8 @@ class OrionNode(object):
                         [
                             "SELECT v.VolumeId, v.Uri, v.Status, v.Caption, v.FullName, v.DisplayName,",
                             "v.VolumeIndex, v.VolumeType, v.DeviceId, v.VolumeDescription, v.VolumeSize",
-                            "FROM Orion.Nodes n INNER JOIN Orion.Volumes v ON v.NodeID = n.NodeID",
+                            "FROM Orion.Nodes n INNER JOIN Orion.Volumes v",
+                            "ON v.NodeID = n.NodeID AND v.InstanceSiteID = n.InstanceSiteID",
                             "WHERE NodeID = @node_id",
                         ]
                     ),

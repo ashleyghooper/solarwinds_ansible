@@ -20,7 +20,7 @@ class QueryBuilder(object):
     """
     Generic SQL query builder for Python, heavily based on
     https://death.andgravity.com/query-builder-how with minor tweaks to suit
-    the SolarWinds Information Service SQL dialect.
+    the SolarWinds Information Service SQL dialect (SWQL).
     """
 
     keywords = [
