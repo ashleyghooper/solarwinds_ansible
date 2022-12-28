@@ -242,11 +242,13 @@ from ansible.module_utils._text import to_native
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarwinds_client import (
     SolarwindsClient,
     solarwindsclient_argument_spec,
+    SolarwindsQuery,
 )
 
-from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.model import (
-    Model,
-)
+# TODO: Delete
+# from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.model import (
+#     Model,
+# )
 
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.query_builder import (
     QueryBuilder,
@@ -368,77 +370,108 @@ class OrionNodeInfo(object):
 
     def nodes(self, module):
         base_table = "Orion.Nodes"
-        if "filters" in module.params and module.params["filters"] != {}:
-            extra_tables_filtering = [
-                t for t in module.params["filters"].keys() if t != base_table
-            ]
+        query = SolarwindsQuery(module, self.solarwinds.client, base_table)
+        query.input_filters = module.params["filters"]
+        query.input_columns = module.params["columns"]
+        query_res = query.execute()
 
-        if "columns" in module.params and module.params["columns"] != []:
-            extra_tables_projecting = [
-                t for t in module.params["columns"].keys() if t != base_table
-            ]
+        module.fail_json(msg="{0}".format(str(query_metadata["projected_columns"])))
 
-        extra_tables = list(set(extra_tables_filtering) | set(extra_tables_projecting))
-        query_tables = [base_table] + extra_tables
+        # filters = {}
+        # if "filters" in module.params and module.params["filters"] != {}:
+        #     filters = module.params["filters"]
+        #     extra_tables_filtering = [
+        #         t
+        #         for t in module.params["filters"].keys()
+        #         if t.lower() != base_table.lower()
+        #     ]
 
-        relationships = self.solarwinds.relationships(module, base_table, extra_tables)
-        properties = self.solarwinds.properties(module, query_tables)
+        # # module.fail_json(msg="{0}".format(str(filters)))
 
+        # if "columns" in module.params and module.params["columns"] != []:
+        #     extra_tables_projecting = [
+        #         t
+        #         for t in module.params["columns"].keys()
+        #         if t.lower() != base_table.lower()
+        #     ]
+
+        # extra_tables = list(set(extra_tables_filtering) | set(extra_tables_projecting))
+        # query_tables = [base_table] + extra_tables
+
+        # module.fail_json(msg="{0}".format(str(query_tables)))
+
+        # properties = self.solarwinds.properties(module, query_tables)
         # module.fail_json(msg="Properties: {0}".format(str(properties)))
 
-        for table in extra_tables:
-            for property in list(
-                set(
-                    module.params["columns"][table]
-                    if table in module.params["columns"]
-                    else []
-                )
-                | set(
-                    [t for t in module.params["filters"][table]]
-                    if table in module.params["filters"]
-                    else []
-                )
-            ):
-                if property not in properties[table]:
+        # relationships = self.solarwinds.relationships(
+        #     module,
+        #     base_table,
+        #     [t for t in properties if t.lower() != base_table.lower()],
+        # )
+
+        # module.fail_json(msg="Properties: {0}".format(str(relationships)))
+
+        # Verify all projected columns and columns used for filtering are valid
+        projected_columns = [
+            ".".join([entity_data["aliases"][t], entity_data["properties"][t][p]])
+            for t in entity_data["all_tables"]
+            for p in list(entity_data["properties"][t].keys())
+        ]
+
+        module.fail_json(msg="Properties: {0}".format(str(projected_columns)))
+
+        projected_columns = {}
+        for table in entity_data["all_tables"]:
+            columns = []
+            for property in entity_data["properties"][table]:
+
+                # for property in list(
+                #     set(
+                #         module.params["columns"][table]
+                #         if table in module.params["columns"]
+                #         else []
+                #     )
+                #     | set(
+                #         [t for t in module.params["filters"][table]]
+                #         if table in module.params["filters"]
+                #         else []
+                #     )
+                # ):
+                if property.lower() in [p.lower() for p in properties[table]]:
+                    columns.append(
+                        ".".join(
+                            [
+                                "".join(
+                                    [u for u in properties[table] if u.isupper()]
+                                ).lower(),
+                                property,
+                            ]
+                        )
+                    )
+                else:
                     module.fail_json(
                         msg="Property '{0}' was not found in table '{1}'".format(
                             property, table
                         )
                     )
-
-        projected_columns = {}
-        for table in query_tables:
-            if table in module.params["columns"]:
-                pass
-
-            columns = []
-            if (
-                table in module.params["columns"]
-                and isinstance(module.params["columns"][table], list)
-                and module.params["columns"][table] != []
-            ):
-                columns.append(
-                    [
-                        ".".join("".join([u for u in table if u.isupper()]).lower(), c)
-                        for c in module.params["columns"][table]
-                    ]
-                )
-            else:
-                pass
             projected_columns[table] = columns
 
-        model = Model(self.solarwinds, module.params["columns"])
-        query_columns = model.query_columns()
-        query = QueryBuilder().SELECT(*query_columns).FROM("Orion.Nodes AS n")
+        # model = Model(self.solarwinds, module.params["columns"])
+        # query_columns = model.query_columns()
 
-        if "filters" in module.params:
-            for table in model.tables:
-                table_class = model.table_instances[table]
-                alias = table_class.alias
-                if (
-                    table in module.params["filters"]
-                    and module.params["filters"][table] != {}
-                ):
+        # module.fail_json(msg=str(projected_columns[base_table]))
+
+        query = (
+            QueryBuilder()
+            .SELECT(*projected_columns[base_table])
+            .FROM("Orion.Nodes AS n")
+        )
+
+        module.fail_json(msg="Query = {0}".format(str(query)))
+
+        if filters:
+            for filter_table in filters:
+                for filter_property in filter_table:
                     if table != "Nodes":
                         left, right = table_class.joins["Nodes"]
                         query.INNER_JOIN(

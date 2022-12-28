@@ -9,8 +9,9 @@ from __future__ import absolute_import, division, print_function
 
 __metaclass__ = type
 
-
+import re
 import traceback
+from datetime import datetime
 
 from ansible.module_utils.basic import missing_required_lib
 
@@ -55,6 +56,11 @@ def validate_connection_params(module):
     for arg in ["hostname", "username", "password"]:
         if params[arg] in (None, ""):
             module.fail_json(msg=error_str.format(arg))
+
+
+def case_insensitive_key(d, k):
+    k = k.lower()
+    return [d[key] for key in d if key.lower() == k]
 
 
 class SolarwindsClient(object):
@@ -160,87 +166,42 @@ class SolarwindsClient(object):
                 )
             )
 
-    def relationships(self, module, source_table, target_tables):
-        """Retrieve table relationships for the given types from the Metadata.Relationship table.
-        Returns:
-            a list of relationships if found, or None
-        """
-        try:
-            table_filters = " ".join(
-                [
-                    ("OR " if i > 0 else "")
-                    + "('{0}' IN (SourceType, TargetType) AND '{1}' IN (SourceType, TargetType))".format(
-                        source_table, t
-                    )
-                    for i, t in enumerate(
-                        [t for t in target_tables if t != source_table]
-                    )
-                ]
-            )
-            # module.fail_json(
-            #     msg="{0}\n{1}\n{2}".format(
-            #         source_type, str(target_types), entity_filters
-            #     )
-            # )
-            relationships_res = self._client.query(
-                " ".join(
-                    [
-                        "SELECT SourceType, TargetType, SourcePrimaryKeyNames,",
-                        "SourceForeignKeyNames, SourceCardinalityMin,",
-                        "SourceCardinalityMax, TargetPrimaryKeyNames,",
-                        "TargetForeignKeyNames, TargetCardinalityMin,",
-                        "TargetCardinalityMax",
-                        "FROM Metadata.Relationship",
-                        "WHERE InstanceType = 'Metadata.Relationship'",
-                        "AND (",
-                        table_filters,
-                        ")",
-                    ]
-                )
-            )
-            table_relations = [
-                t["TargetType"]
-                for t in relationships_res["results"]
-                if t["SourceType"] == source_table
-            ]
-            table_relations_set = set(table_relations)
-            unmatched_tables = [
-                t for t in target_tables if t not in table_relations_set
-            ]
-            if unmatched_tables:
-                raise Exception(
-                    "No relationship found between entities '{0}' and {1}".format(
-                        source_table, str(unmatched_tables)
-                    )
-                )
-            return {
-                r["TargetType"]: [
-                    t
-                    for t in relationships_res["results"]
-                    if t["SourceType"] == source_table
-                ]
-                for r in relationships_res["results"]
-            }
-        except Exception as ex:
-            module.fail_json(
-                msg="Failed to retrieve table relationships between '{0}' and {1}: {2}".format(
-                    source_table, str(target_tables), str(ex)
-                )
-            )
 
-    def properties(self, module, tables):
-        """Retrieve the list of properties for a list of tables from the Metadata.Property table.
-        Returns:
-            a dictionary of tables each containing a dictionary of columns, or None
-        """
+class SolarwindsQuery(object):
+    """
+    Class for facilitating dynamic SolarWinds Information Service queries.
+    """
+
+    @property
+    def input_filters(self):
+        return self._input_filters
+
+    @property
+    def input_columns(self):
+        return self._input_columns
+
+    @input_filters.setter
+    def input_filters(self, value):
+        self._input_filters = value
+
+    @input_columns.setter
+    def input_columns(self, value):
+        self._input_columns = value
+
+    def __init__(self, module, solarwinds_client, base_table):
+        self._module = module
+        self._client = solarwinds_client
+        self.base_table = base_table
+
+    def entity_properties(self, input_tables_set):
         try:
             table_filters = "".join(
                 [
                     (", " if i > 0 else "") + "'{0}'".format(t)
-                    for i, t in enumerate(tables)
+                    for i, t in enumerate(input_tables_set)
                 ]
             )
-            properties_res = self._client.query(
+            query_res = self._client.query(
                 " ".join(
                     [
                         "SELECT EntityName, Name, Type, IsMetric, Units, MaxValue,",
@@ -257,17 +218,235 @@ class SolarwindsClient(object):
                     ]
                 )
             )
-            return {
+
+            properties = {
                 r["EntityName"]: {
                     p["Name"]: p
-                    for p in properties_res["results"]
+                    for p in query_res["results"]
                     if p["EntityName"] == r["EntityName"]
                 }
-                for r in properties_res["results"]
+                for r in query_res["results"]
             }
+            return properties
         except Exception as ex:
-            module.fail_json(
+            self._module.fail_json(
                 msg="Failed to retrieve entity properties for {0}: {1}".format(
-                    str(tables), str(ex)
+                    str(input_tables_set), str(ex)
                 )
             )
+
+    def valid_filter(self, data_type, filter_content):
+        if isinstance(filter_content, dict):
+            for key in filter_content.keys():
+                if key in ["max", "min", "not"]:
+                    valid = self.valid_filter(data_type, filter_content[key])
+                if not valid:
+                    return False
+        elif isinstance(filter_content, list):
+            criteria = filter_content
+        else:
+            criteria = [filter_content]
+        for criterion in [c for c in criteria if c is not None]:
+            if data_type not in [
+                "System.String",
+                "System.Type",
+                "System.Guid",
+                "System.DateTime",
+                "System.Int32",
+                "System.Boolean",
+            ]:
+                return False
+            elif data_type in [
+                "System.String",
+                "System.Type",
+                "System.Guid",
+                "System.DateTime",
+            ] and not isinstance(criterion, str):
+                return False
+            elif (
+                data_type == "System.Int32"
+                and not isinstance(criterion, int)
+                and not re.match(criterion, "[0-9]+")
+            ):
+                return False
+            elif data_type == "System.Guid" and not re.match(
+                criterion, "[a-z0-9]{8}(-[a-z0-9]{4}){3}-[a-z0-9]{12}"
+            ):
+                return False
+            elif data_type == "System.DateTime":
+                try:
+                    valid_datetime = datetime.fromisoformat(criterion)
+                except Exception:
+                    return False
+            elif data_type in "System.Boolean":
+                if not isinstance(criterion, bool):
+                    if isinstance(criterion, str):
+                        if criterion.lower() not in [
+                            "yes",
+                            "no",
+                            "on",
+                            "off",
+                            "true",
+                            "false",
+                        ]:
+                            return False
+                    else:
+                        return False
+            return True
+
+    def validated_properties(self):
+        base_table = self.base_table
+        input_tables_set = set(
+            [base_table]
+            + list(self._input_filters.keys())
+            + list(self._input_columns.keys())
+        )
+        properties = self.entity_properties(input_tables_set)
+        unmatched_tables = [
+            t for t in input_tables_set if not case_insensitive_key(properties, t)
+        ]
+        if unmatched_tables:
+            self._module.fail_json(
+                msg="Unable to look up table(s) {0}".format(unmatched_tables)
+            )
+        all_tables = list(properties.keys())
+        for table in self._input_filters:
+            real_table = [t for t in all_tables if t.lower() == table.lower()][0]
+            unmatched_filters = [
+                f
+                for f in self._input_filters[table]
+                if not case_insensitive_key(properties[real_table], f)
+            ]
+            if unmatched_filters:
+                self._module.fail_json(
+                    msg="Unable to look up column(s) {0} for table {1} specified in input filters".format(
+                        unmatched_filters, real_table
+                    )
+                )
+            for filter in [
+                f for f in self._input_filters[table] if f is not None and f != []
+            ]:
+                data_type = case_insensitive_key(properties[real_table], filter)[0][
+                    "Type"
+                ]
+                filter_content = self._input_filters[table][filter]
+                if not self.valid_filter(data_type, filter_content):
+                    self._module.fail_json(
+                        msg="Filter criteria '{0}' not valid for property '{1}.{2}' with data type of '{3}'".format(
+                            str(filter_content), real_table, filter, data_type
+                        )
+                    )
+        for table in self._input_columns:
+            real_table = [t for t in all_tables if t.lower() == table.lower()][0]
+            unmatched_columns = [
+                c
+                for c in self._input_columns[table]
+                if not case_insensitive_key(properties[real_table], c)
+            ]
+            if unmatched_columns:
+                self._module.fail_json(
+                    msg="Unable to look up column(s) {0} for table {1} specified in input columns".format(
+                        unmatched_columns, real_table
+                    )
+                )
+        return properties
+
+    def relations(self, joined_tables):
+        base_table = self.base_table
+        try:
+            table_filters = " ".join(
+                [
+                    ("OR " if i > 0 else "")
+                    + "('{0}' IN (SourceType, TargetType) AND '{1}' IN (SourceType, TargetType))".format(
+                        base_table, t
+                    )
+                    for i, t in enumerate(joined_tables)
+                ]
+            )
+            # module.fail_json(
+            #     msg="{0}\n{1}\n{2}".format(base_table, str(properties), table_filters)
+            # )
+            relations_res = self._client.query(
+                " ".join(
+                    [
+                        "SELECT SourceType, TargetType, SourcePrimaryKeyNames,",
+                        "SourceForeignKeyNames, SourceCardinalityMin,",
+                        "SourceCardinalityMax, TargetPrimaryKeyNames,",
+                        "TargetForeignKeyNames, TargetCardinalityMin,",
+                        "TargetCardinalityMax",
+                        "FROM Metadata.Relationship",
+                        "WHERE InstanceType = 'Metadata.Relationship'",
+                        "AND (",
+                        table_filters,
+                        ")",
+                    ]
+                )
+            )
+
+            table_relations = {}
+            for table in joined_tables:
+                table_relations[table] = {
+                    r["TargetType"]: r
+                    for r in relations_res["results"]
+                    if r["SourceType"] == base_table and r["TargetType"] in table
+                }
+
+            unmatched_tables = [
+                t for t in joined_tables if t not in table_relations.keys()
+            ]
+            if unmatched_tables:
+                raise Exception(
+                    "No relationship found between entities '{0}' and {1}".format(
+                        base_table, str(unmatched_tables)
+                    )
+                )
+            return table_relations
+
+        except Exception as ex:
+            self._module.fail_json(
+                msg="Failed to retrieve table relationships between '{0}' and {1}: {2}".format(
+                    base_table, str(joined_tables), str(ex)
+                )
+            )
+
+    def metadata(self):
+        """Retrieve properties, relationships, etc for tables being queried.
+        Returns:
+            a dictionary containing properties, relationships (joins), etc, for each table
+        """
+        base_table = self.base_table
+        properties = self.validated_properties()
+        all_tables = list(properties.keys())
+        base_table = [t for t in all_tables if t.lower() == base_table.lower()][0]
+        aliases = {
+            t: "".join([u for u in t if u.isupper()]).lower() for t in all_tables
+        }
+        projected_columns = []
+        for table in self._input_columns:
+            real_table = [t for t in all_tables if t.lower() == table.lower()][0]
+            if case_insensitive_key(properties, real_table):
+                for column in self._input_columns[table]:
+                    real_column = [
+                        c for c in properties[real_table] if c.lower() == column.lower()
+                    ][0]
+                    if case_insensitive_key(properties[real_table], real_column):
+                        projected_columns.append(
+                            ".".join([aliases[real_table], real_column])
+                        )
+
+        joined_tables = [t for t in all_tables if t != base_table]
+        relations = self.relations(joined_tables)
+
+        metadata = dict(
+            all_tables=all_tables,
+            aliases=aliases,
+            base_table=base_table,
+            joined_tables=joined_tables,
+            projected_columns=projected_columns,
+            properties=properties,
+            relations=relations,
+        )
+        return metadata
+
+    def execute(self):
+        metadata = self.metadata()
