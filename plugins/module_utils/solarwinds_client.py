@@ -550,7 +550,9 @@ class SolarwindsQuery(object):
         except Exception as ex:
             self._module.fail_json(msg="Nodes query failed: {0}".format(str(ex)))
 
-        return query_res
+
+        info = {"data": query_res["results"], "count": len(query_res["results"]), "query": str(query)}
+        return info
 
         # for criterion in [c for c in column_criteria if c is not None]:
 

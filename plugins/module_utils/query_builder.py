@@ -127,7 +127,7 @@ class QueryBuilder(object):
 
             if not last and not thing.keyword:
                 try:
-                    yield " " + self.separators[keyword]
+                    yield self.separators[keyword]
                 except KeyError:
                     yield self.default_separator
 

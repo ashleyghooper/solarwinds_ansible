@@ -374,8 +374,7 @@ class OrionNodeInfo(object):
         query.input_filters = module.params["filters"]
         query.input_columns = module.params["columns"]
         query_res = query.execute()
-
-        module.fail_json(msg=str(query_res))
+        return query_res
 
         # filters = {}
         # if "filters" in module.params and module.params["filters"] != {}:
