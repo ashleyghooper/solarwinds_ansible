@@ -15,6 +15,10 @@ from datetime import datetime
 
 from ansible.module_utils.basic import missing_required_lib
 
+from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.query_builder import (
+    QueryBuilder,
+)
+
 ORIONSDK_IMPORT_ERROR = None
 try:
     from orionsdk import SwisClient
@@ -191,6 +195,8 @@ class SolarwindsQuery(object):
     def __init__(self, module, solarwinds_client, base_table):
         self._module = module
         self._client = solarwinds_client
+        self._filters = {}
+        self._columns = {}
         self.base_table = base_table
 
     def entity_properties(self, input_tables_set):
@@ -235,66 +241,7 @@ class SolarwindsQuery(object):
                 )
             )
 
-    def valid_filter(self, data_type, filter_content):
-        if isinstance(filter_content, dict):
-            for key in filter_content.keys():
-                if key in ["max", "min", "not"]:
-                    valid = self.valid_filter(data_type, filter_content[key])
-                if not valid:
-                    return False
-        elif isinstance(filter_content, list):
-            criteria = filter_content
-        else:
-            criteria = [filter_content]
-        for criterion in [c for c in criteria if c is not None]:
-            if data_type not in [
-                "System.String",
-                "System.Type",
-                "System.Guid",
-                "System.DateTime",
-                "System.Int32",
-                "System.Boolean",
-            ]:
-                return False
-            elif data_type in [
-                "System.String",
-                "System.Type",
-                "System.Guid",
-                "System.DateTime",
-            ] and not isinstance(criterion, str):
-                return False
-            elif (
-                data_type == "System.Int32"
-                and not isinstance(criterion, int)
-                and not re.match(criterion, "[0-9]+")
-            ):
-                return False
-            elif data_type == "System.Guid" and not re.match(
-                criterion, "[a-z0-9]{8}(-[a-z0-9]{4}){3}-[a-z0-9]{12}"
-            ):
-                return False
-            elif data_type == "System.DateTime":
-                try:
-                    valid_datetime = datetime.fromisoformat(criterion)
-                except Exception:
-                    return False
-            elif data_type in "System.Boolean":
-                if not isinstance(criterion, bool):
-                    if isinstance(criterion, str):
-                        if criterion.lower() not in [
-                            "yes",
-                            "no",
-                            "on",
-                            "off",
-                            "true",
-                            "false",
-                        ]:
-                            return False
-                    else:
-                        return False
-            return True
-
-    def validated_properties(self):
+    def properties(self):
         base_table = self.base_table
         input_tables_set = set(
             [base_table]
@@ -312,6 +259,7 @@ class SolarwindsQuery(object):
         all_tables = list(properties.keys())
         for table in self._input_filters:
             real_table = [t for t in all_tables if t.lower() == table.lower()][0]
+            self._filters[real_table] = {}
             unmatched_filters = [
                 f
                 for f in self._input_filters[table]
@@ -326,18 +274,16 @@ class SolarwindsQuery(object):
             for filter in [
                 f for f in self._input_filters[table] if f is not None and f != []
             ]:
-                data_type = case_insensitive_key(properties[real_table], filter)[0][
-                    "Type"
+                real_column = [
+                    c for c in properties[real_table] if c.lower() == filter.lower()
+                ][0]
+                self._filters[real_table][real_column] = self._input_filters[table][
+                    filter
                 ]
-                filter_content = self._input_filters[table][filter]
-                if not self.valid_filter(data_type, filter_content):
-                    self._module.fail_json(
-                        msg="Filter criteria '{0}' not valid for property '{1}.{2}' with data type of '{3}'".format(
-                            str(filter_content), real_table, filter, data_type
-                        )
-                    )
+
         for table in self._input_columns:
             real_table = [t for t in all_tables if t.lower() == table.lower()][0]
+            self._columns[real_table] = []
             unmatched_columns = [
                 c
                 for c in self._input_columns[table]
@@ -349,6 +295,11 @@ class SolarwindsQuery(object):
                         unmatched_columns, real_table
                     )
                 )
+            for column in self._input_columns[table]:
+                real_column = [
+                    c for c in properties[real_table] if c.lower() == column.lower()
+                ][0]
+                self._columns[real_table].append(real_column)
         return properties
 
     def relations(self, joined_tables):
@@ -383,13 +334,18 @@ class SolarwindsQuery(object):
                 )
             )
 
-            table_relations = {}
-            for table in joined_tables:
-                table_relations[table] = {
-                    r["TargetType"]: r
-                    for r in relations_res["results"]
-                    if r["SourceType"] == base_table and r["TargetType"] in table
-                }
+            table_relations = {
+                r["TargetType"]: r
+                for r in relations_res["results"]
+                # if r["SourceType"] == base_table
+            }
+            # table_relations = {}
+            # for table in joined_tables:
+            #     table_relations[table] = {
+            #         r["TargetType"]: r
+            #         for r in relations_res["results"]
+            #         if r["SourceType"] == base_table and r["TargetType"] in table
+            #     }
 
             unmatched_tables = [
                 t for t in joined_tables if t not in table_relations.keys()
@@ -400,6 +356,7 @@ class SolarwindsQuery(object):
                         base_table, str(unmatched_tables)
                     )
                 )
+            # self._module.fail_json(msg=table_relations)
             return table_relations
 
         except Exception as ex:
@@ -415,22 +372,23 @@ class SolarwindsQuery(object):
             a dictionary containing properties, relationships (joins), etc, for each table
         """
         base_table = self.base_table
-        properties = self.validated_properties()
+        properties = self.properties()
         all_tables = list(properties.keys())
         base_table = [t for t in all_tables if t.lower() == base_table.lower()][0]
         aliases = {
-            t: "".join([u for u in t if u.isupper()]).lower() for t in all_tables
+            t: "_".join([u for u in t if u.isupper()]).lower() for t in all_tables
         }
-        projected_columns = []
+        projected_columns = {}
         for table in self._input_columns:
             real_table = [t for t in all_tables if t.lower() == table.lower()][0]
+            projected_columns[real_table] = []
             if case_insensitive_key(properties, real_table):
                 for column in self._input_columns[table]:
                     real_column = [
                         c for c in properties[real_table] if c.lower() == column.lower()
                     ][0]
                     if case_insensitive_key(properties[real_table], real_column):
-                        projected_columns.append(
+                        projected_columns[real_table].append(
                             ".".join([aliases[real_table], real_column])
                         )
 
@@ -448,5 +406,236 @@ class SolarwindsQuery(object):
         )
         return metadata
 
+    def column_filters(self, data_type, filter_content):
+        filters = []
+        if isinstance(filter_content, dict):
+            for key in filter_content.keys():
+                # TODO: max/min together with not is invalid - need to handle
+                if key in ["max", "min", "not"]:
+                    modifier_filters = self.column_filters(
+                        data_type, filter_content[key]
+                    )
+                if not modifier_filters:
+                    return False
+                else:
+                    if key == "min":
+                        modifier = ">"
+                    elif key == "max":
+                        modifier = "<"
+                    elif key == "not":
+                        modifier = "!="
+                    else:
+                        return False
+                    filters.append((modifier, modifier_filters[1]))
+        elif isinstance(filter_content, list):
+            criteria_list = filter_content
+        else:
+            criteria_list = [filter_content]
+        for criterion in [c for c in criteria_list if c is not None]:
+            if data_type not in [
+                "System.String",
+                "System.Type",
+                "System.Guid",
+                "System.DateTime",
+                "System.Int32",
+                "System.Boolean",
+            ]:
+                return False
+            elif data_type in [
+                "System.String",
+                "System.Type",
+                "System.Guid",
+                "System.DateTime",
+            ] and not isinstance(criterion, str):
+                return False
+            elif data_type == "System.String":
+                filters.append(("LIKE", "'{0}'".format(criterion)))
+            elif data_type == "System.Int32":
+                if not isinstance(criterion, int) and not re.match(criterion, "[0-9]+"):
+                    return False
+                else:
+                    filters.append(("=", criterion))
+            elif data_type == "System.Guid":
+                if not re.match(criterion, "[a-z0-9]{8}(-[a-z0-9]{4}){3}-[a-z0-9]{12}"):
+                    return False
+                else:
+                    filters.append(("=", "'{0}'".format(criterion)))
+            elif data_type == "System.DateTime":
+                try:
+                    datetime.fromisoformat(criterion)
+                except Exception:
+                    return False
+                filters.append(("=", "'{0}'".format(criterion)))
+            elif data_type in "System.Boolean":
+                if isinstance(criterion, bool):
+                    filters.append(("=", criterion))
+                elif isinstance(criterion, str):
+                    if criterion.lower() in [
+                        "yes",
+                        "on",
+                        "true",
+                    ]:
+                        filters.append(("=", True))
+                    elif criterion.lower() in [
+                        "no",
+                        "off",
+                        "false",
+                    ]:
+                        filters.append(("=", False))
+                    else:
+                        return False
+            else:
+                # Unhandled data type
+                return False
+        return filters
+
     def execute(self):
         metadata = self.metadata()
+
+        query = (
+            QueryBuilder()
+            .SELECT(*metadata["projected_columns"][metadata["base_table"]])
+            .FROM(
+                "{0} AS {1}".format(
+                    self.base_table, metadata["aliases"][self.base_table]
+                )
+            )
+        )
+
+        if self._filters:
+            for table in metadata["joined_tables"]:
+                table_relation = metadata["relations"][table]
+                source_type = table_relation["SourceType"]
+                target_type = table_relation["TargetType"]
+                join_columns = [
+                    (" AND " if i > 0 else "")
+                    + "{0}.{1} = {2}.{3}".format(
+                        metadata["aliases"][target_type],
+                        table_relation["SourceForeignKeyNames"][i],
+                        metadata["aliases"][source_type],
+                        table_relation["SourcePrimaryKeyNames"][i],
+                    )
+                    for i in range(len(table_relation["SourceForeignKeyNames"]))
+                ]
+                query.INNER_JOIN(
+                    "{0} AS {1} ON {2}".format(
+                        table, metadata["aliases"][table], "".join(join_columns)
+                    )
+                )
+                for column in self._filters[table]:
+                    filter_content = self._filters[table][column]
+                    data_type = metadata["properties"][table][column]["Type"]
+                    column_filters = self.column_filters(data_type, filter_content)
+                    # self._module.fail_json(msg=column_criteria)
+                    if not column_filters:
+                        self._module.fail_json(
+                            msg="Filter criteria '{0}' not valid for property '{1}.{2}' with data type of '{3}'".format(
+                                str(filter_content), table, column, data_type
+                            )
+                        )
+                    column_criteria_sql = " ".join(
+                        [
+                            ("OR " if i > 0 else "")
+                            + "{0} {1} {2}".format(column, c[0], c[1])
+                            for i, c in enumerate(column_filters)
+                        ]
+                    )
+
+                    query.WHERE("({0})".format(column_criteria_sql))
+
+        # self._module.fail_json(msg=str(query))
+
+        try:
+            query_res = self._client.query(str(query))
+        except Exception as ex:
+            self._module.fail_json(msg="Nodes query failed: {0}".format(str(ex)))
+
+        return query_res
+
+        # for criterion in [c for c in column_criteria if c is not None]:
+
+    #                     if column_criteria:
+    #                         column_criteria = " ".join([column_criteria, "OR"])
+    #                     column_criteria += " ".join(
+    #                         [
+    #                             ".".join([alias, column]),
+    #                             comparator,
+    #                             criterion,
+    #                         ]
+    #                     )
+
+    #                     query.WHERE("({0})".format(column_criteria))
+
+    #                 # Iterate over each value for the current param and validate
+    #                 for element in [v for v in param_value if v is not None]:
+    #                     match = None
+    #                     comparator = "LIKE"
+    #                     wrap = "'"
+    #                     if (
+    #                         hasattr(table_class, "boolean_columns")
+    #                         and column in table_class.boolean_columns
+    #                     ):
+    #                         comparator = "="
+    #                         if isinstance(element, bool):
+    #                             match = str(element)
+    #                         elif isinstance(element, str):
+    #                             match = (
+    #                                 "True"
+    #                                 if str(element).lower() in ["yes", "on", "true"]
+    #                                 else "False"
+    #                             )
+    #                         else:
+    #                             module.fail_json(
+    #                                 msg="All filters on column '{0}' should be boolean: {1}".format(
+    #                                     column
+    #                                 )
+    #                             )
+    #                     elif isinstance(criteria, dict):
+    #                         column = element
+    #                         match = param_value[element]
+    #                     elif isinstance(criteria, str):
+    #                         match = element
+    #                     elif isinstance(criteria, int):
+    #                         wrap = None
+    #                         try:
+    #                             match = int(element)
+    #                         except Exception as ex:
+    #                             pass
+    #                     else:
+    #                         match = element
+
+    #                     if not match:
+    #                         module.fail_json(
+    #                             msg="Invalid filter for column '{0}'".format(column)
+    #                         )
+
+    #                     if wrap:
+    #                         criterion = "{0}{1}{2}".format(wrap, match, wrap)
+    #                     else:
+    #                         criterion = str(match)
+
+    #                     if column_criteria:
+    #                         column_criteria = " ".join([column_criteria, "OR"])
+    #                     column_criteria += " ".join(
+    #                         [
+    #                             ".".join([alias, column]),
+    #                             comparator,
+    #                             criterion,
+    #                         ]
+    #                     )
+
+    #                     query.WHERE("({0})".format(column_criteria))
+
+    # # module.fail_json(msg="{0}".format(str(query)))
+
+    # # from_where = [" ".join(["FROM", " ".join(tables_spec)])]
+    # # if len(criteria.strip()) > 0:
+    # #     from_where.append(" ".join(["WHERE", criteria]))
+
+    # # Assemble and run the query
+    # # query = " ".join(["SELECT", projection] + from_where)
+
+    # try:
+    #     query_res = self.solarwinds.client.query(str(query))
+    # except Exception as ex:
+    #     module.fail_json(msg="Nodes query failed: {0}".format(str(ex)))

@@ -250,9 +250,9 @@ from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarw
 #     Model,
 # )
 
-from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.query_builder import (
-    QueryBuilder,
-)
+# from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.query_builder import (
+#     QueryBuilder,
+# )
 
 # TODO: Delete
 # from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.swis_query_nodes import (
@@ -375,7 +375,7 @@ class OrionNodeInfo(object):
         query.input_columns = module.params["columns"]
         query_res = query.execute()
 
-        module.fail_json(msg="{0}".format(str(query_metadata["projected_columns"])))
+        module.fail_json(msg=str(query_res))
 
         # filters = {}
         # if "filters" in module.params and module.params["filters"] != {}:
