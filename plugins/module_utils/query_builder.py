@@ -123,13 +123,18 @@ class QueryBuilder(object):
 
             format = self.formats[bool(thing.alias)][keyword]
             value = thing.value
-            yield format.format(value=value, alias=thing.alias)
+
+            content = format.format(value=value, alias=thing.alias)
 
             if not last and not thing.keyword:
                 try:
-                    yield self.separators[keyword]
+                    separator = self.separators[keyword]
+                    yield "{0} {1}".format(content, separator)
                 except KeyError:
-                    yield self.default_separator
+                    separator = self.default_separator
+                    yield "{0}{1}".format(content, separator)
+            else:
+                yield content
 
 
 class _Thing(NamedTuple):

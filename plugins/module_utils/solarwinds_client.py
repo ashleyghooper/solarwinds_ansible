@@ -12,6 +12,7 @@ __metaclass__ = type
 import re
 import traceback
 from datetime import datetime
+from enum import Enum
 
 from ansible.module_utils.basic import missing_required_lib
 
@@ -67,7 +68,7 @@ def case_insensitive_key(d, k):
     return [d[key] for key in d if key.lower() == k]
 
 
-class SolarwindsClient(object):
+class SolarWindsClient(object):
     """
     Class encapsulating SolarWinds Information Service API client.
     """
@@ -171,33 +172,110 @@ class SolarwindsClient(object):
             )
 
 
-class SolarwindsQuery(object):
+class SolarWindsEntityAlias(Enum):
+    """
+    Map SolarWinds entity/table names to friendlier aliases.
+    """
+
+    Agent = "Orion.AgentManagement.Agent"
+    Agents = "Orion.AgentManagement.Agent"
+    CustomProperty = "Orion.NodesCustomProperties"
+    CustomProperties = "Orion.NodesCustomProperties"
+    Engine = "Orion.Engines"
+    Engines = "Orion.Engines"
+    Node = "Orion.Nodes"
+    Nodes = "Orion.Nodes"
+    PollingEngine = "Orion.Engines"
+    PollingEngines = "Orion.Engines"
+    Volume = "Orion.Volumes"
+    Volumes = "Orion.Volumes"
+
+    @classmethod
+    def from_alias_case_insensitive(cls, alias):
+        # return cls.__members__.items()
+        entity = [m for m in cls.__members__.items() if m[0].lower() == alias.lower()][
+            0
+        ][0]
+        return cls[entity].value
+
+
+class SolarWindsQuery(object):
     """
     Class for facilitating dynamic SolarWinds Information Service queries.
     """
 
     @property
-    def input_filters(self):
-        return self._input_filters
+    def base_table(self):
+        return self._base_table
+
+    @property
+    def input_include(self):
+        return self._input_include
+
+    @property
+    def input_exclude(self):
+        return self._input_exclude
 
     @property
     def input_columns(self):
         return self._input_columns
 
-    @input_filters.setter
-    def input_filters(self, value):
-        self._input_filters = value
+    @base_table.setter
+    def base_table(self, value):
+        try:
+            self._base_table = SolarWindsEntityAlias.from_alias_case_insensitive(value)
+        except Exception:
+            self._base_table = value
+
+    @input_include.setter
+    def input_include(self, value=dict()):
+        self._input_include = {}
+        if value:
+            for input_table in value:
+                try:
+                    table = SolarWindsEntityAlias.from_alias_case_insensitive(
+                        input_table
+                    )
+                except Exception:
+                    table = input_table
+                self._input_include[table] = value[input_table]
+
+    @input_exclude.setter
+    def input_exclude(self, value=dict()):
+        self._input_exclude = {}
+        if value:
+            for input_table in value:
+                try:
+                    table = SolarWindsEntityAlias.from_alias_case_insensitive(
+                        input_table
+                    )
+                except Exception:
+                    table = input_table
+                self._input_exclude[table] = value[input_table]
 
     @input_columns.setter
     def input_columns(self, value):
-        self._input_columns = value
+        self._input_columns = {}
+        if value:
+            for input_table in value:
+                try:
+                    table = SolarWindsEntityAlias.from_alias_case_insensitive(
+                        input_table
+                    )
+                except Exception:
+                    table = input_table
+                self._input_columns[table] = value[input_table]
 
-    def __init__(self, module, solarwinds_client, base_table):
+    def __init__(self, module, solarwinds_client):
         self._module = module
         self._client = solarwinds_client
-        self._filters = {}
-        self._columns = {}
-        self.base_table = base_table
+        self._base_table = None
+        self._input_include = None
+        self._input_exclude = None
+        self._input_columns = None
+        self._include = None
+        self._exclude = None
+        self._columns = None
 
     def entity_properties(self, input_tables_set):
         try:
@@ -242,12 +320,18 @@ class SolarwindsQuery(object):
             )
 
     def properties(self):
-        base_table = self.base_table
+        base_table = self._base_table
+        # self._module.fail_json(str(self._input_filters))
+        # input_filters_set = set(
+        #     [i for i in self._input_include] + [e for e in self._input_exclude]
+        # )
         input_tables_set = set(
             [base_table]
-            + list(self._input_filters.keys())
-            + list(self._input_columns.keys())
+            + [i for i in self._input_include]
+            + [e for e in self._input_exclude]
+            + [c for c in self._input_columns]
         )
+        # self._module.fail_json(str(input_tables_set))
         properties = self.entity_properties(input_tables_set)
         unmatched_tables = [
             t for t in input_tables_set if not case_insensitive_key(properties, t)
@@ -257,53 +341,89 @@ class SolarwindsQuery(object):
                 msg="Unable to look up table(s) {0}".format(unmatched_tables)
             )
         all_tables = list(properties.keys())
-        for table in self._input_filters:
+        for table in self._input_include:
             real_table = [t for t in all_tables if t.lower() == table.lower()][0]
-            self._filters[real_table] = {}
-            unmatched_filters = [
-                f
-                for f in self._input_filters[table]
-                if not case_insensitive_key(properties[real_table], f)
+            if not self._include:
+                self._include = {}
+            self._include[real_table] = {}
+            unmatched_includes = [
+                i
+                for i in self._input_include[table]
+                if not case_insensitive_key(properties[real_table], i)
             ]
-            if unmatched_filters:
+
+            if unmatched_includes:
                 self._module.fail_json(
-                    msg="Unable to look up column(s) {0} for table {1} specified in input filters".format(
-                        unmatched_filters, real_table
+                    msg="Unable to look up column(s) {0} for table {1} specified in include filters".format(
+                        unmatched_includes, real_table
                     )
                 )
             for filter in [
-                f for f in self._input_filters[table] if f is not None and f != []
+                f for f in self._input_include[table] if f is not None and f != []
             ]:
                 real_column = [
                     c for c in properties[real_table] if c.lower() == filter.lower()
                 ][0]
-                self._filters[real_table][real_column] = self._input_filters[table][
+                self._include[real_table][real_column] = self._input_include[table][
+                    filter
+                ]
+
+        for table in self._input_exclude:
+            real_table = [t for t in all_tables if t.lower() == table.lower()][0]
+            if not self._exclude:
+                self._exclude = {}
+            self._exclude[real_table] = {}
+            unmatched_excludes = [
+                e
+                for e in self._input_exclude[table]
+                if not case_insensitive_key(properties[real_table], e)
+            ]
+            if unmatched_excludes:
+                self._module.fail_json(
+                    msg="Unable to look up column(s) {0} for table {1} specified in exclude filters".format(
+                        unmatched_excludes, real_table
+                    )
+                )
+            for filter in [
+                f for f in self._input_exclude[table] if f is not None and f != []
+            ]:
+                real_column = [
+                    c for c in properties[real_table] if c.lower() == filter.lower()
+                ][0]
+                self._exclude[real_table][real_column] = self._input_exclude[table][
                     filter
                 ]
 
         for table in self._input_columns:
             real_table = [t for t in all_tables if t.lower() == table.lower()][0]
+            if not self._columns:
+                self._columns = {}
             self._columns[real_table] = []
-            unmatched_columns = [
-                c
-                for c in self._input_columns[table]
-                if not case_insensitive_key(properties[real_table], c)
-            ]
-            if unmatched_columns:
-                self._module.fail_json(
-                    msg="Unable to look up column(s) {0} for table {1} specified in input columns".format(
-                        unmatched_columns, real_table
+            if self._input_columns[table] is not None:
+                unmatched_columns = [
+                    c
+                    for c in self._input_columns[table]
+                    if not case_insensitive_key(properties[real_table], c)
+                ]
+                if unmatched_columns:
+                    self._module.fail_json(
+                        msg="Unable to look up column(s) {0} for table {1} specified in input columns".format(
+                            unmatched_columns, real_table
+                        )
                     )
-                )
-            for column in self._input_columns[table]:
-                real_column = [
-                    c for c in properties[real_table] if c.lower() == column.lower()
-                ][0]
-                self._columns[real_table].append(real_column)
+                for column in self._input_columns[table]:
+                    real_column = [
+                        c for c in properties[real_table] if c.lower() == column.lower()
+                    ][0]
+                    self._columns[real_table].append(real_column)
+            else:
+                self._columns[real_table] = properties[real_table]
         return properties
 
     def relations(self, joined_tables):
-        base_table = self.base_table
+        if not joined_tables:
+            return list()
+        base_table = self._base_table
         try:
             table_filters = " ".join(
                 [
@@ -371,7 +491,7 @@ class SolarwindsQuery(object):
         Returns:
             a dictionary containing properties, relationships (joins), etc, for each table
         """
-        base_table = self.base_table
+        base_table = self._base_table
         properties = self.properties()
         all_tables = list(properties.keys())
         base_table = [t for t in all_tables if t.lower() == base_table.lower()][0]
@@ -379,18 +499,44 @@ class SolarwindsQuery(object):
             t: "_".join([u for u in t if u.isupper()]).lower() for t in all_tables
         }
         projected_columns = {}
-        for table in self._input_columns:
-            real_table = [t for t in all_tables if t.lower() == table.lower()][0]
-            projected_columns[real_table] = []
-            if case_insensitive_key(properties, real_table):
-                for column in self._input_columns[table]:
-                    real_column = [
-                        c for c in properties[real_table] if c.lower() == column.lower()
-                    ][0]
-                    if case_insensitive_key(properties[real_table], real_column):
-                        projected_columns[real_table].append(
-                            ".".join([aliases[real_table], real_column])
-                        )
+        if self._input_columns:
+            for table in self._input_columns:
+                real_table = [t for t in all_tables if t.lower() == table.lower()][0]
+                projected_columns[real_table] = []
+                if case_insensitive_key(properties, real_table):
+                    if self._input_columns[table] is not None:
+                        for column in self._input_columns[table]:
+                            real_column = [
+                                c
+                                for c in properties[real_table]
+                                if c.lower() == column.lower()
+                            ][0]
+                            if case_insensitive_key(
+                                properties[real_table], real_column
+                            ):
+                                projected_columns[real_table].append(
+                                    ".".join([aliases[real_table], real_column])
+                                )
+                    else:
+                        # self._module.fail_json(
+                        #     msg=str(
+                        #         [
+                        #             ".".join([aliases[real_table], c])
+                        #             for t in projected_columns
+                        #             for c in properties[real_table]
+                        #             if c not in t
+                        #         ]
+                        #     )
+                        # )
+                        projected_columns[real_table] = [
+                            ".".join([aliases[real_table], c])
+                            for t in projected_columns
+                            for c in properties[real_table]
+                            if c not in t
+                        ]
+        else:
+            projected_columns[base_table] = [c for c in properties[base_table]]
+        # self._module.fail_json(msg=str(projected_columns))
 
         joined_tables = [t for t in all_tables if t != base_table]
         relations = self.relations(joined_tables)
@@ -409,9 +555,10 @@ class SolarwindsQuery(object):
     def column_filters(self, data_type, filter_content):
         filters = []
         if isinstance(filter_content, dict):
-            for key in filter_content.keys():
-                # TODO: max/min together with not is invalid - need to handle
-                if key in ["max", "min", "not"]:
+            modifiers = filter_content.keys()
+            for key in modifiers:
+                modifier_filters = None
+                if key in ["max", "min"]:
                     modifier_filters = self.column_filters(
                         data_type, filter_content[key]
                     )
@@ -419,111 +566,125 @@ class SolarwindsQuery(object):
                     return False
                 else:
                     if key == "min":
-                        modifier = ">"
+                        modifier = ">="
                     elif key == "max":
-                        modifier = "<"
-                    elif key == "not":
-                        modifier = "!="
+                        modifier = "<="
                     else:
                         return False
-                    filters.append((modifier, modifier_filters[1]))
-        elif isinstance(filter_content, list):
-            criteria_list = filter_content
+                    filters.append((modifier, modifier_filters[0][1]))
         else:
-            criteria_list = [filter_content]
-        for criterion in [c for c in criteria_list if c is not None]:
-            if data_type not in [
-                "System.String",
-                "System.Type",
-                "System.Guid",
-                "System.DateTime",
-                "System.Int32",
-                "System.Boolean",
-            ]:
-                return False
-            elif data_type in [
-                "System.String",
-                "System.Type",
-                "System.Guid",
-                "System.DateTime",
-            ] and not isinstance(criterion, str):
-                return False
-            elif data_type == "System.String":
-                filters.append(("LIKE", "'{0}'".format(criterion)))
-            elif data_type == "System.Int32":
-                if not isinstance(criterion, int) and not re.match(criterion, "[0-9]+"):
-                    return False
-                else:
-                    filters.append(("=", criterion))
-            elif data_type == "System.Guid":
-                if not re.match(criterion, "[a-z0-9]{8}(-[a-z0-9]{4}){3}-[a-z0-9]{12}"):
-                    return False
-                else:
-                    filters.append(("=", "'{0}'".format(criterion)))
-            elif data_type == "System.DateTime":
-                try:
-                    datetime.fromisoformat(criterion)
-                except Exception:
-                    return False
-                filters.append(("=", "'{0}'".format(criterion)))
-            elif data_type in "System.Boolean":
-                if isinstance(criterion, bool):
-                    filters.append(("=", criterion))
-                elif isinstance(criterion, str):
-                    if criterion.lower() in [
-                        "yes",
-                        "on",
-                        "true",
-                    ]:
-                        filters.append(("=", True))
-                    elif criterion.lower() in [
-                        "no",
-                        "off",
-                        "false",
-                    ]:
-                        filters.append(("=", False))
-                    else:
-                        return False
+            if isinstance(filter_content, list):
+                criteria_list = filter_content
             else:
-                # Unhandled data type
-                return False
+                criteria_list = [filter_content]
+            for criterion in [c for c in criteria_list if c is not None]:
+                if data_type not in [
+                    "System.String",
+                    "System.Type",
+                    "System.Guid",
+                    "System.DateTime",
+                    "System.Int16",
+                    "System.Int32",
+                    "System.Boolean",
+                ]:
+                    return False
+                elif data_type in [
+                    "System.String",
+                    "System.Type",
+                    "System.Guid",
+                    "System.DateTime",
+                ] and not isinstance(criterion, str):
+                    return False
+                elif data_type == "System.String":
+                    filters.append(("LIKE", "'{0}'".format(criterion)))
+                elif data_type in ["System.Int16", "System.Int32"]:
+                    if not isinstance(criterion, int) and not re.match(
+                        criterion, "[0-9]+"
+                    ):
+                        return False
+                    else:
+                        filters.append(("=", criterion))
+                elif data_type == "System.Guid":
+                    if not re.match(
+                        criterion, "[a-z0-9]{8}(-[a-z0-9]{4}){3}-[a-z0-9]{12}"
+                    ):
+                        return False
+                    else:
+                        filters.append(("=", "'{0}'".format(criterion)))
+                elif data_type == "System.DateTime":
+                    try:
+                        datetime.fromisoformat(criterion)
+                    except Exception:
+                        return False
+                    filters.append(("=", "'{0}'".format(criterion)))
+                elif data_type in "System.Boolean":
+                    if isinstance(criterion, bool):
+                        filters.append(("=", criterion))
+                    elif isinstance(criterion, str):
+                        if criterion.lower() in [
+                            "yes",
+                            "on",
+                            "true",
+                        ]:
+                            filters.append(("=", True))
+                        elif criterion.lower() in [
+                            "no",
+                            "off",
+                            "false",
+                        ]:
+                            filters.append(("=", False))
+                        else:
+                            return False
+                else:
+                    # Unhandled data type
+                    return False
         return filters
 
     def execute(self):
         metadata = self.metadata()
-
+        # self._module.fail_json(msg=str(metadata))
         query = (
             QueryBuilder()
-            .SELECT(*metadata["projected_columns"][metadata["base_table"]])
+            .SELECT(
+                *[
+                    c
+                    for t in metadata["projected_columns"]
+                    for c in metadata["projected_columns"][t]
+                ]
+            )
             .FROM(
                 "{0} AS {1}".format(
-                    self.base_table, metadata["aliases"][self.base_table]
+                    self._base_table, metadata["aliases"][self._base_table]
                 )
             )
         )
 
-        if self._filters:
-            for table in metadata["joined_tables"]:
-                table_relation = metadata["relations"][table]
-                source_type = table_relation["SourceType"]
-                target_type = table_relation["TargetType"]
-                join_columns = [
-                    (" AND " if i > 0 else "")
-                    + "{0}.{1} = {2}.{3}".format(
-                        metadata["aliases"][target_type],
-                        table_relation["SourceForeignKeyNames"][i],
-                        metadata["aliases"][source_type],
-                        table_relation["SourcePrimaryKeyNames"][i],
-                    )
-                    for i in range(len(table_relation["SourceForeignKeyNames"]))
-                ]
-                query.INNER_JOIN(
-                    "{0} AS {1} ON {2}".format(
-                        table, metadata["aliases"][table], "".join(join_columns)
-                    )
+        # Add joins for secondary tables
+        for table in metadata["joined_tables"]:
+            table_relation = metadata["relations"][table]
+            source_type = table_relation["SourceType"]
+            target_type = table_relation["TargetType"]
+            alias = metadata["aliases"][table]
+            join_columns = [
+                (" AND " if i > 0 else "")
+                + "{0}.{1} = {2}.{3}".format(
+                    metadata["aliases"][target_type],
+                    table_relation["SourceForeignKeyNames"][i],
+                    metadata["aliases"][source_type],
+                    table_relation["SourcePrimaryKeyNames"][i],
                 )
-                for column in self._filters[table]:
-                    filter_content = self._filters[table][column]
+                for i in range(len(table_relation["SourceForeignKeyNames"]))
+            ]
+            query.INNER_JOIN(
+                "{0} AS {1} ON {2}".format(table, alias, "".join(join_columns))
+            )
+
+        # Add include filters
+        if self._include:
+            for table in [t for t in metadata["all_tables"] if t in self._include]:
+                alias = metadata["aliases"][table]
+                for column in self._include[table]:
+                    filter_content = self._include[table][column]
                     data_type = metadata["properties"][table][column]["Type"]
                     column_filters = self.column_filters(data_type, filter_content)
                     # self._module.fail_json(msg=column_criteria)
@@ -536,22 +697,50 @@ class SolarwindsQuery(object):
                     column_criteria_sql = " ".join(
                         [
                             ("OR " if i > 0 else "")
-                            + "{0} {1} {2}".format(column, c[0], c[1])
+                            + "{0}.{1} {2} {3}".format(alias, column, c[0], c[1])
                             for i, c in enumerate(column_filters)
                         ]
                     )
 
                     query.WHERE("({0})".format(column_criteria_sql))
 
-        # self._module.fail_json(msg=str(query))
+        # Add exclude filters
+        if self._exclude:
+            for table in [t for t in metadata["all_tables"] if t in self._exclude]:
+                alias = metadata["aliases"][table]
+                for column in self._exclude[table]:
+                    filter_content = self._exclude[table][column]
+                    data_type = metadata["properties"][table][column]["Type"]
+                    column_filters = self.column_filters(data_type, filter_content)
+                    # self._module.fail_json(msg=column_criteria)
+                    if not column_filters:
+                        self._module.fail_json(
+                            msg="Filter criteria '{0}' not valid for property '{1}.{2}' with data type of '{3}'".format(
+                                str(filter_content), table, column, data_type
+                            )
+                        )
+                    column_criteria_sql = " ".join(
+                        [
+                            ("OR " if i > 0 else "")
+                            + "{0}.{1} {2} {3}".format(alias, column, c[0], c[1])
+                            for i, c in enumerate(column_filters)
+                        ]
+                    )
+
+                    query.WHERE("NOT ({0})".format(column_criteria_sql))
+
+        self._module.fail_json(msg=str(query))
 
         try:
             query_res = self._client.query(str(query))
         except Exception as ex:
             self._module.fail_json(msg="Nodes query failed: {0}".format(str(ex)))
 
-
-        info = {"data": query_res["results"], "count": len(query_res["results"]), "query": str(query)}
+        info = {
+            "data": query_res["results"],
+            "count": len(query_res["results"]),
+            "query": str(query),
+        }
         return info
 
         # for criterion in [c for c in column_criteria if c is not None]:

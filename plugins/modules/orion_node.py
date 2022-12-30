@@ -15,7 +15,7 @@ DOCUMENTATION = r"""
 ---
 module: orion_node
 
-short_description: Create/removes/edit nodes in Solarwinds Orion NPM
+short_description: Create/removes/edit nodes in SolarWinds Orion NPM
 
 description:
   - Manage nodes in SolarWinds Orion NPM.
@@ -234,8 +234,8 @@ import traceback
 from ansible.module_utils.basic import AnsibleModule, missing_required_lib
 from ansible.module_utils._text import to_native
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarwinds_client import (
-    SolarwindsClient,
-    solarwindsclient_argument_spec,
+    SolarWindsClient,
+    solarWindsclient_argument_spec,
 )
 
 # Basic UTC timezone for python2.7 compatibility
