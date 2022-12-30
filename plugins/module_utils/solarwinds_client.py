@@ -177,17 +177,11 @@ class SolarWindsEntityAlias(Enum):
     Map SolarWinds entity/table names to friendlier aliases.
     """
 
-    Agent = "Orion.AgentManagement.Agent"
     Agents = "Orion.AgentManagement.Agent"
-    CustomProperty = "Orion.NodesCustomProperties"
     CustomProperties = "Orion.NodesCustomProperties"
-    Engine = "Orion.Engines"
     Engines = "Orion.Engines"
-    Node = "Orion.Nodes"
     Nodes = "Orion.Nodes"
-    PollingEngine = "Orion.Engines"
     PollingEngines = "Orion.Engines"
-    Volume = "Orion.Volumes"
     Volumes = "Orion.Volumes"
 
     @classmethod
@@ -530,12 +524,21 @@ class SolarWindsQuery(object):
                         # )
                         projected_columns[real_table] = [
                             ".".join([aliases[real_table], c])
-                            for t in projected_columns
-                            for c in properties[real_table]
-                            if c not in t
+                            for c in properties[real_table].keys()
                         ]
-        else:
-            projected_columns[base_table] = [c for c in properties[base_table]]
+
+        if not projected_columns:
+            # self._module.fail_json(msg=str(properties[self._base_table]))
+            projected_columns = {
+                self._base_table: [
+                    ".".join([aliases[self._base_table], c])
+                    for c in properties[self._base_table].keys()
+                ]
+            }
+            # projected_columns = {
+            #     c: dict(alias=aliases[real_table], table=real_table)
+            #     for c in properties[base_table]
+            # }
         # self._module.fail_json(msg=str(projected_columns))
 
         joined_tables = [t for t in all_tables if t != base_table]
@@ -643,13 +646,13 @@ class SolarWindsQuery(object):
     def execute(self):
         metadata = self.metadata()
         # self._module.fail_json(msg=str(metadata))
-        query = (
+        queries = []
+        base_query = (
             QueryBuilder()
             .SELECT(
                 *[
-                    c
-                    for t in metadata["projected_columns"]
-                    for c in metadata["projected_columns"][t]
+                    ".".join([metadata["aliases"][self._base_table], c])
+                    for c in metadata["properties"][self._base_table]
                 ]
             )
             .FROM(
@@ -675,7 +678,7 @@ class SolarWindsQuery(object):
                 )
                 for i in range(len(table_relation["SourceForeignKeyNames"]))
             ]
-            query.INNER_JOIN(
+            base_query.INNER_JOIN(
                 "{0} AS {1} ON {2}".format(table, alias, "".join(join_columns))
             )
 
@@ -702,7 +705,7 @@ class SolarWindsQuery(object):
                         ]
                     )
 
-                    query.WHERE("({0})".format(column_criteria_sql))
+                    base_query.WHERE("({0})".format(column_criteria_sql))
 
         # Add exclude filters
         if self._exclude:
@@ -727,106 +730,269 @@ class SolarWindsQuery(object):
                         ]
                     )
 
-                    query.WHERE("NOT ({0})".format(column_criteria_sql))
+                    base_query.WHERE("NOT ({0})".format(column_criteria_sql))
 
-        self._module.fail_json(msg=str(query))
+        # self._module.fail_json(msg=str(query))
 
         try:
-            query_res = self._client.query(str(query))
+            base_query_res = self._client.query(str(base_query))
+            queries.append(str(base_query))
         except Exception as ex:
-            self._module.fail_json(msg="Nodes query failed: {0}".format(str(ex)))
+            self._module.fail_json(
+                msg="Base query for table '{0}' failed: {1}".format(
+                    self._base_table, str(ex)
+                )
+            )
+
+        data = []
+        if "results" in base_query_res:
+            results = {}
+            results[self._base_table] = base_query_res["results"]
+            indexed = {}
+            data = results[self._base_table]
+            for joined_table in [
+                t
+                for t in metadata["joined_tables"]
+                if t in metadata["projected_columns"] and t in metadata["relations"]
+            ]:
+                relation = metadata["relations"][joined_table]
+                target_alias = metadata["aliases"][relation["TargetType"]]
+                suppl_query = (
+                    QueryBuilder()
+                    .SELECT(*metadata["projected_columns"][joined_table])
+                    .FROM(
+                        "{0} AS {1}".format(
+                            joined_table, metadata["aliases"][joined_table]
+                        )
+                    )
+                )
+
+                key_sets = []
+                for k in range(len(relation["SourcePrimaryKeyNames"])):
+                    key_sets.append(
+                        set(
+                            [
+                                str(
+                                    case_insensitive_key(
+                                        r,
+                                        relation["SourceForeignKeyNames"][k],
+                                    )[0]
+                                )
+                                for r in results[self._base_table]
+                            ]
+                        )
+                    )
+                    suppl_query.WHERE(
+                        "{0} IN ({1})".format(
+                            ".".join(
+                                [target_alias, relation["SourceForeignKeyNames"][k]]
+                            ),
+                            ", ".join(list(key_sets[k])),
+                        )
+                    )
+
+                try:
+                    join_query_res = self._client.query(str(suppl_query))
+                    queries.append(str(suppl_query))
+                except Exception as ex:
+                    self._module.fail_json(
+                        msg="Join query for joined table {0} failed: {1}".format(
+                            joined_table, str(ex)
+                        )
+                    )
+
+                results[joined_table] = join_query_res["results"]
+
+                indexed[joined_table] = {}
+                for r in results[joined_table]:
+                    keys = []
+                    for k in range(len(relation["SourcePrimaryKeyNames"])):
+                        keys.append(
+                            str(
+                                case_insensitive_key(
+                                    r,
+                                    relation["SourcePrimaryKeyNames"][k],
+                                )[0]
+                            )
+                        )
+                    if not tuple(keys) in indexed[joined_table]:
+                        indexed[joined_table][tuple(keys)] = []
+                    indexed[joined_table][tuple(keys)].append(r)
+
+            # self._module.fail_json(msg=str(indexed))
+
+            for i, r in enumerate(data):
+                for joined_table in [
+                    t
+                    for t in metadata["joined_tables"]
+                    if t in metadata["projected_columns"] and t in metadata["relations"]
+                ]:
+                    relation = metadata["relations"][joined_table]
+                    keys = []
+                    for k in range(len(relation["SourcePrimaryKeyNames"])):
+                        keys.append(
+                            str(
+                                case_insensitive_key(
+                                    r,
+                                    relation["SourcePrimaryKeyNames"][k],
+                                )[0]
+                            )
+                        )
+                        # keys.append(r[relation["SourcePrimaryKeyNames"][k]])
+                    try:
+                        suppl_table_name = SolarWindsEntityAlias(joined_table).name
+                    except Exception:
+                        suppl_table_name = joined_table
+                    if tuple(keys) in indexed[joined_table]:
+                        data[i][suppl_table_name] = indexed[joined_table][tuple(keys)]
+
+            # self._module.fail_json(msg=str(data))
 
         info = {
-            "data": query_res["results"],
-            "count": len(query_res["results"]),
-            "query": str(query),
+            "data": data,
+            "count": len(data),
+            "queries": str(queries),
         }
         return info
 
-        # for criterion in [c for c in column_criteria if c is not None]:
+    #             # for base_record in data:
+    #             # relation = metadata["relations"][joined_table]
+    #             # self._module.fail_json(msg=str(relation["SourcePrimaryKeyNames"]))
 
-    #                     if column_criteria:
-    #                         column_criteria = " ".join([column_criteria, "OR"])
-    #                     column_criteria += " ".join(
-    #                         [
-    #                             ".".join([alias, column]),
-    #                             comparator,
-    #                             criterion,
+    #             primary_keys = relation["SourcePrimaryKeyNames"]
+    #             foreign_keys = relation["SourceForeignKeyNames"]
+
+    #             # node_ids = [[i["NodeID"] for i in query_results]
+
+    #             #     i[relation["SourcePrimaryKeyNames"][k]]
+    #             #     for i in query_results
+    #             #     for k in relation["SourcePrimaryKeyNames"]
+    #             # ]
+    #             self._module.fail_json(msg=str(join_ids))
+    #         node_custom_properties = self.node_custom_properties(module, node_ids)
+    #         if node_custom_properties is not None:
+    #             node_custom_properties_indexed = {
+    #                 ncp["NodeID"]: ncp for ncp in node_custom_properties
+    #             }
+    #         else:
+    #             node_custom_properties_indexed = {}
+    #         node_agents = self.node_agents(module, node_ids)
+    #         if node_agents is not None:
+    #             node_agents_indexed = {na["NodeID"]: na for na in node_agents}
+    #         else:
+    #             node_agents_indexed = {}
+
+    #         nodes = []
+    #         for node_data in base_query_data:
+    #             if node_data["NodeID"] in node_custom_properties_indexed:
+    #                 node_data.update(
+    #                     {
+    #                         "CustomProperties": node_custom_properties_indexed[
+    #                             node_data["NodeID"]
     #                         ]
-    #                     )
+    #                     }
+    #                 )
+    #             if node_data["NodeID"] in node_agents_indexed:
+    #                 node_data.update(
+    #                     {"Agent": node_agents_indexed[node_data["NodeID"]]}
+    #                 )
 
-    #                     query.WHERE("({0})".format(column_criteria))
+    #             nodes.append(node_data)
 
-    #                 # Iterate over each value for the current param and validate
-    #                 for element in [v for v in param_value if v is not None]:
-    #                     match = None
-    #                     comparator = "LIKE"
-    #                     wrap = "'"
-    #                     if (
-    #                         hasattr(table_class, "boolean_columns")
-    #                         and column in table_class.boolean_columns
-    #                     ):
-    #                         comparator = "="
-    #                         if isinstance(element, bool):
-    #                             match = str(element)
-    #                         elif isinstance(element, str):
-    #                             match = (
-    #                                 "True"
-    #                                 if str(element).lower() in ["yes", "on", "true"]
-    #                                 else "False"
-    #                             )
-    #                         else:
-    #                             module.fail_json(
-    #                                 msg="All filters on column '{0}' should be boolean: {1}".format(
-    #                                     column
-    #                                 )
-    #                             )
-    #                     elif isinstance(criteria, dict):
-    #                         column = element
-    #                         match = param_value[element]
-    #                     elif isinstance(criteria, str):
-    #                         match = element
-    #                     elif isinstance(criteria, int):
-    #                         wrap = None
-    #                         try:
-    #                             match = int(element)
-    #                         except Exception as ex:
-    #                             pass
-    #                     else:
-    #                         match = element
+    #     else:
+    #         nodes = None
 
-    #                     if not match:
-    #                         module.fail_json(
-    #                             msg="Invalid filter for column '{0}'".format(column)
-    #                         )
+    #     info = {
+    #         "data": base_query_res["results"],
+    #         "count": len(base_query_res["results"]),
+    #         "query": str(base_query),
+    #     }
+    #     return info
 
-    #                     if wrap:
-    #                         criterion = "{0}{1}{2}".format(wrap, match, wrap)
-    #                     else:
-    #                         criterion = str(match)
+    #     # for criterion in [c for c in column_criteria if c is not None]:
 
-    #                     if column_criteria:
-    #                         column_criteria = " ".join([column_criteria, "OR"])
-    #                     column_criteria += " ".join(
-    #                         [
-    #                             ".".join([alias, column]),
-    #                             comparator,
-    #                             criterion,
-    #                         ]
-    #                     )
+    # #                     if column_criteria:
+    # #                         column_criteria = " ".join([column_criteria, "OR"])
+    # #                     column_criteria += " ".join(
+    # #                         [
+    # #                             ".".join([alias, column]),
+    # #                             comparator,
+    # #                             criterion,
+    # #                         ]
+    # #                     )
 
-    #                     query.WHERE("({0})".format(column_criteria))
+    # #                     query.WHERE("({0})".format(column_criteria))
 
-    # # module.fail_json(msg="{0}".format(str(query)))
+    # #                 # Iterate over each value for the current param and validate
+    # #                 for element in [v for v in param_value if v is not None]:
+    # #                     match = None
+    # #                     comparator = "LIKE"
+    # #                     wrap = "'"
+    # #                     if (
+    # #                         hasattr(table_class, "boolean_columns")
+    # #                         and column in table_class.boolean_columns
+    # #                     ):
+    # #                         comparator = "="
+    # #                         if isinstance(element, bool):
+    # #                             match = str(element)
+    # #                         elif isinstance(element, str):
+    # #                             match = (
+    # #                                 "True"
+    # #                                 if str(element).lower() in ["yes", "on", "true"]
+    # #                                 else "False"
+    # #                             )
+    # #                         else:
+    # #                             module.fail_json(
+    # #                                 msg="All filters on column '{0}' should be boolean: {1}".format(
+    # #                                     column
+    # #                                 )
+    # #                             )
+    # #                     elif isinstance(criteria, dict):
+    # #                         column = element
+    # #                         match = param_value[element]
+    # #                     elif isinstance(criteria, str):
+    # #                         match = element
+    # #                     elif isinstance(criteria, int):
+    # #                         wrap = None
+    # #                         try:
+    # #                             match = int(element)
+    # #                         except Exception as ex:
+    # #                             pass
+    # #                     else:
+    # #                         match = element
 
-    # # from_where = [" ".join(["FROM", " ".join(tables_spec)])]
-    # # if len(criteria.strip()) > 0:
-    # #     from_where.append(" ".join(["WHERE", criteria]))
+    # #                     if not match:
+    # #                         module.fail_json(
+    # #                             msg="Invalid filter for column '{0}'".format(column)
+    # #                         )
 
-    # # Assemble and run the query
-    # # query = " ".join(["SELECT", projection] + from_where)
+    # #                     if wrap:
+    # #                         criterion = "{0}{1}{2}".format(wrap, match, wrap)
+    # #                     else:
+    # #                         criterion = str(match)
 
-    # try:
-    #     query_res = self.solarwinds.client.query(str(query))
-    # except Exception as ex:
-    #     module.fail_json(msg="Nodes query failed: {0}".format(str(ex)))
+    # #                     if column_criteria:
+    # #                         column_criteria = " ".join([column_criteria, "OR"])
+    # #                     column_criteria += " ".join(
+    # #                         [
+    # #                             ".".join([alias, column]),
+    # #                             comparator,
+    # #                             criterion,
+    # #                         ]
+    # #                     )
+
+    # #                     query.WHERE("({0})".format(column_criteria))
+
+    # # # module.fail_json(msg="{0}".format(str(query)))
+
+    # # # from_where = [" ".join(["FROM", " ".join(tables_spec)])]
+    # # # if len(criteria.strip()) > 0:
+    # # #     from_where.append(" ".join(["WHERE", criteria]))
+
+    # # # Assemble and run the query
+    # # # query = " ".join(["SELECT", projection] + from_where)
+
+    # # try:
+    # #     query_res = self.solarwinds.client.query(str(query))
+    # # except Exception as ex:
+    # #     module.fail_json(msg="Nodes query failed: {0}".format(str(ex)))
