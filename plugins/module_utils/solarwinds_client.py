@@ -335,7 +335,9 @@ class SolarWindsQuery(object):
                 msg="Unable to look up table(s) {0}".format(unmatched_tables)
             )
         all_tables = list(properties.keys())
-        for table in self._input_include:
+        for table in [
+            t for t in self._input_include if self._input_include[t] is not None
+        ]:
             real_table = [t for t in all_tables if t.lower() == table.lower()][0]
             if not self._include:
                 self._include = {}
@@ -345,7 +347,6 @@ class SolarWindsQuery(object):
                 for i in self._input_include[table]
                 if not case_insensitive_key(properties[real_table], i)
             ]
-
             if unmatched_includes:
                 self._module.fail_json(
                     msg="Unable to look up column(s) {0} for table {1} specified in include filters".format(
@@ -362,7 +363,9 @@ class SolarWindsQuery(object):
                     filter
                 ]
 
-        for table in self._input_exclude:
+        for table in [
+            t for t in self._input_exclude if self._input_exclude[t] is not None
+        ]:
             real_table = [t for t in all_tables if t.lower() == table.lower()][0]
             if not self._exclude:
                 self._exclude = {}
