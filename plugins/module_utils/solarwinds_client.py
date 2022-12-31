@@ -417,8 +417,8 @@ class SolarWindsQuery(object):
                 self._columns[real_table] = properties[real_table]
         return properties
 
-    def relations(self, joined_tables):
-        if not joined_tables:
+    def relations(self, suppl_tables):
+        if not suppl_tables:
             return list()
         base_table = self._base_table
         try:
@@ -428,7 +428,7 @@ class SolarWindsQuery(object):
                     + "('{0}' IN (SourceType, TargetType) AND '{1}' IN (SourceType, TargetType))".format(
                         base_table, t
                     )
-                    for i, t in enumerate(joined_tables)
+                    for i, t in enumerate(suppl_tables)
                 ]
             )
             # module.fail_json(
@@ -451,6 +451,8 @@ class SolarWindsQuery(object):
                 )
             )
 
+            # self._module.fail_json(msg=str(relations_res))
+
             table_relations = {
                 r["TargetType"]: r
                 for r in relations_res["results"]
@@ -465,7 +467,7 @@ class SolarWindsQuery(object):
             #     }
 
             unmatched_tables = [
-                t for t in joined_tables if t not in table_relations.keys()
+                t for t in suppl_tables if t not in table_relations.keys()
             ]
             if unmatched_tables:
                 raise Exception(
@@ -479,7 +481,7 @@ class SolarWindsQuery(object):
         except Exception as ex:
             self._module.fail_json(
                 msg="Failed to retrieve table relationships between '{0}' and {1}: {2}".format(
-                    base_table, str(joined_tables), str(ex)
+                    base_table, str(suppl_tables), str(ex)
                 )
             )
 
@@ -538,13 +540,14 @@ class SolarWindsQuery(object):
                     for c in properties[self._base_table].keys()
                 ]
             }
+
             # projected_columns = {
             #     c: dict(alias=aliases[real_table], table=real_table)
             #     for c in properties[base_table]
             # }
         # self._module.fail_json(msg=str(projected_columns))
 
-        supplemental_tables = [t for t in all_tables if t != base_table]
+        suppl_tables = [t for t in all_tables if t != base_table]
         joined_tables = list(
             set(
                 [t for t in self._include.keys() if t != base_table]
@@ -555,19 +558,69 @@ class SolarWindsQuery(object):
             )
         )
 
-        # joined_tables = [
-        #     t
-        #     for t in [i for i in self._include if self._include[t] is not None]
-        #     + [e for e in self._exclude if self._exclude[t] is not None]
-        # ]
-        relations = self.relations(supplemental_tables)
+        relations = self.relations(suppl_tables)
+
+        base_join_columns = list(
+            set(
+                [
+                    ".".join(
+                        [
+                            aliases[self._base_table],
+                            case_insensitive_key(properties[self._base_table], c)[0][
+                                "Name"
+                            ],
+                        ]
+                    )
+                    for t in suppl_tables
+                    for c in relations[t]["SourcePrimaryKeyNames"]
+                    if relations[t]["SourceType"] == self._base_table
+                ]
+            )
+        )
+
+        # self._module.fail_json(msg=str(properties["Orion.NodesCustomProperties"]))
+
+        join_columns = {
+            t: list(
+                set(
+                    [
+                        ".".join(
+                            [
+                                aliases[t],
+                                case_insensitive_key(properties[t], c)[0]["Name"],
+                            ]
+                        )
+                        for c in relations[t]["SourceForeignKeyNames"]
+                    ]
+                )
+            )
+            for t in suppl_tables
+        }
+
+        if False:
+            join_columns = {
+                t: list(
+                    set(
+                        [
+                            ".".join([aliases[t], c])
+                            for c in relations[t]["SourceForeignKeyNames"]
+                        ]
+                    )
+                )
+                for t in suppl_tables
+            }
+
+        join_columns.update({self._base_table: base_join_columns})
+
+        # self._module.fail_json(msg=str(join_columns))
 
         metadata = dict(
             all_tables=all_tables,
             aliases=aliases,
             base_table=base_table,
+            join_columns=join_columns,
             joined_tables=joined_tables,
-            supplemental_tables=supplemental_tables,
+            suppl_tables=suppl_tables,
             projected_columns=projected_columns,
             properties=properties,
             relations=relations,
@@ -665,14 +718,17 @@ class SolarWindsQuery(object):
     def execute(self):
         metadata = self.metadata()
         # self._module.fail_json(msg=str(metadata))
+        # self._module.fail_json(msg=str(metadata["projected_columns"][self._base_table]))
         queries = []
         base_query = (
             QueryBuilder()
             .SELECT(
-                *[
-                    ".".join([metadata["aliases"][self._base_table], c])
-                    for c in metadata["properties"][self._base_table]
-                ]
+                *list(
+                    set(
+                        metadata["projected_columns"][self._base_table]
+                        + metadata["join_columns"][self._base_table]
+                    )
+                )
             )
             .FROM(
                 "{0} AS {1}".format(
@@ -680,12 +736,12 @@ class SolarWindsQuery(object):
                 )
             )
         )
-
+        # self._module.fail_json(str(base_query))
         # Add joins for secondary tables
         # self._module.fail_json(
         #     msg=str(metadata["joined_tables"])
         #     + "\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\"
-        #     + str(metadata["supplemental_tables"])
+        #     + str(metadata["suppl_tables"])
         # )
         for table in metadata["joined_tables"]:
             table_relation = metadata["relations"][table]
@@ -774,38 +830,67 @@ class SolarWindsQuery(object):
             results[self._base_table] = base_query_res["results"]
             indexed = {}
             data = results[self._base_table]
-            for supplemental_table in [
+            for suppl_table in [
                 t
-                for t in metadata["supplemental_tables"]
+                for t in metadata["suppl_tables"]
                 if t in metadata["projected_columns"] and t in metadata["relations"]
             ]:
-                relation = metadata["relations"][supplemental_table]
+                relation = metadata["relations"][suppl_table]
+
+                # TODO: Cleanup
+                if False:
+                    if suppl_table in [
+                        "Orion.NodesCustomProperties",
+                        "CustomProperties",
+                    ]:
+                        self._module.fail_json(msg=str(relation))
+
                 target_alias = metadata["aliases"][relation["TargetType"]]
                 suppl_query = (
                     QueryBuilder()
-                    .SELECT(*metadata["projected_columns"][supplemental_table])
+                    .SELECT(
+                        *list(
+                            set(
+                                metadata["projected_columns"][suppl_table]
+                                + metadata["join_columns"][suppl_table]
+                            )
+                        )
+                    )
                     .FROM(
                         "{0} AS {1}".format(
-                            supplemental_table, metadata["aliases"][supplemental_table]
+                            suppl_table, metadata["aliases"][suppl_table]
                         )
                     )
                 )
 
                 key_sets = []
                 for k in range(len(relation["SourcePrimaryKeyNames"])):
-                    key_sets.append(
-                        set(
-                            [
-                                str(
-                                    case_insensitive_key(
-                                        r,
-                                        relation["SourceForeignKeyNames"][k],
-                                    )[0]
-                                )
-                                for r in results[self._base_table]
-                            ]
+                    try:
+                        key_sets.append(
+                            set(
+                                [
+                                    # This should be string
+                                    str(
+                                        case_insensitive_key(
+                                            r,
+                                            relation["SourceForeignKeyNames"][k],
+                                        )[0]
+                                    )
+                                    for r in results[self._base_table]
+                                ]
+                            )
                         )
-                    )
+                    except Exception:
+                        self._module.fail_json(
+                            msg=str(
+                                "{0} ///////////////// {1} ///////////////// {2} ///////////////// {3}".format(
+                                    relation["SourcePrimaryKeyNames"],
+                                    relation["SourceForeignKeyNames"],
+                                    k,
+                                    results[self._base_table],
+                                )
+                            )
+                        )
                     suppl_query.WHERE(
                         "{0} IN ({1})".format(
                             ".".join(
@@ -821,34 +906,41 @@ class SolarWindsQuery(object):
                 except Exception as ex:
                     self._module.fail_json(
                         msg="Join query for joined table {0} failed: {1}".format(
-                            supplemental_table, str(ex)
+                            suppl_table, str(ex)
                         )
                     )
 
-                results[supplemental_table] = join_query_res["results"]
+                results[suppl_table] = join_query_res["results"]
 
-                indexed[joined_table] = {}
-                for r in results[joined_table]:
+                indexed[suppl_table] = {}
+                for r in results[suppl_table]:
                     keys = []
                     for k in range(len(relation["SourcePrimaryKeyNames"])):
-                        keys.append(
-                            str(
-                                case_insensitive_key(
-                                    r,
-                                    relation["SourcePrimaryKeyNames"][k],
-                                )[0]
+                        try:
+                            keys.append(
+                                str(
+                                    case_insensitive_key(
+                                        r,
+                                        relation["SourcePrimaryKeyNames"][k],
+                                    )[0]
+                                )
                             )
-                        )
-                    if not tuple(keys) in indexed[joined_table]:
-                        indexed[joined_table][tuple(keys)] = []
-                    indexed[joined_table][tuple(keys)].append(r)
+                        except Exception as ex:
+                            self._module.fail_json(
+                                msg="{0} ////////////////////////// {1} ............................... {2}".format(
+                                    relation, r, ex
+                                )
+                            )
+                    if not tuple(keys) in indexed[suppl_table]:
+                        indexed[suppl_table][tuple(keys)] = []
+                    indexed[suppl_table][tuple(keys)].append(r)
 
             # self._module.fail_json(msg=str(indexed))
 
             for i, r in enumerate(data):
                 for joined_table in [
                     t
-                    for t in metadata["joined_tables"]
+                    for t in metadata["suppl_tables"]
                     if t in metadata["projected_columns"] and t in metadata["relations"]
                 ]:
                     relation = metadata["relations"][joined_table]
@@ -864,11 +956,11 @@ class SolarWindsQuery(object):
                         )
                         # keys.append(r[relation["SourcePrimaryKeyNames"][k]])
                     try:
-                        suppl_table_name = SolarWindsEntityAlias(joined_table).name
+                        suppl_table_name = SolarWindsEntityAlias(suppl_table).name
                     except Exception:
-                        suppl_table_name = joined_table
-                    if tuple(keys) in indexed[joined_table]:
-                        data[i][suppl_table_name] = indexed[joined_table][tuple(keys)]
+                        suppl_table_name = suppl_table
+                    if tuple(keys) in indexed[suppl_table]:
+                        data[i][suppl_table_name] = indexed[suppl_table][tuple(keys)]
 
             # self._module.fail_json(msg=str(data))
 
