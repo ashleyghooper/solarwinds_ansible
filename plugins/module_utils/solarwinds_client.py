@@ -513,9 +513,7 @@ class SolarWindsQuery(object):
                             if case_insensitive_key(
                                 properties[real_table], real_column
                             ):
-                                projected_columns[real_table].append(
-                                    ".".join([aliases[real_table], real_column])
-                                )
+                                projected_columns[real_table].append(real_column)
                     else:
                         # self._module.fail_json(
                         #     msg=str(
@@ -528,17 +526,13 @@ class SolarWindsQuery(object):
                         #     )
                         # )
                         projected_columns[real_table] = [
-                            ".".join([aliases[real_table], c])
-                            for c in properties[real_table].keys()
+                            c for c in properties[real_table].keys()
                         ]
 
         if not projected_columns:
             # self._module.fail_json(msg=str(properties[self._base_table]))
             projected_columns = {
-                self._base_table: [
-                    ".".join([aliases[self._base_table], c])
-                    for c in properties[self._base_table].keys()
-                ]
+                self._base_table: [c for c in properties[self._base_table].keys()]
             }
 
             # projected_columns = {
@@ -563,14 +557,7 @@ class SolarWindsQuery(object):
         base_join_columns = list(
             set(
                 [
-                    ".".join(
-                        [
-                            aliases[self._base_table],
-                            case_insensitive_key(properties[self._base_table], c)[0][
-                                "Name"
-                            ],
-                        ]
-                    )
+                    case_insensitive_key(properties[self._base_table], c)[0]["Name"]
                     for t in suppl_tables
                     for c in relations[t]["SourcePrimaryKeyNames"]
                     if relations[t]["SourceType"] == self._base_table
@@ -584,12 +571,7 @@ class SolarWindsQuery(object):
             t: list(
                 set(
                     [
-                        ".".join(
-                            [
-                                aliases[t],
-                                case_insensitive_key(properties[t], c)[0]["Name"],
-                            ]
-                        )
+                        case_insensitive_key(properties[t], c)[0]["Name"]
                         for c in relations[t]["SourceForeignKeyNames"]
                     ]
                 )
@@ -725,8 +707,11 @@ class SolarWindsQuery(object):
             .SELECT(
                 *list(
                     set(
-                        metadata["projected_columns"][self._base_table]
-                        + metadata["join_columns"][self._base_table]
+                        [
+                            ".".join([metadata["aliases"][self._base_table], c])
+                            for c in metadata["projected_columns"][self._base_table]
+                            + metadata["join_columns"][self._base_table]
+                        ]
                     )
                 )
             )
@@ -828,7 +813,7 @@ class SolarWindsQuery(object):
         if "results" in base_query_res:
             results = {}
             results[self._base_table] = base_query_res["results"]
-            data[self._base_table] = [
+            data = [
                 {
                     k: v
                     for k, v in sub.items()
@@ -837,7 +822,6 @@ class SolarWindsQuery(object):
                 for sub in base_query_res["results"]
             ]
             indexed = {}
-            data = results[self._base_table]
             for suppl_table in [
                 t
                 for t in metadata["suppl_tables"]
@@ -859,8 +843,11 @@ class SolarWindsQuery(object):
                     .SELECT(
                         *list(
                             set(
-                                metadata["projected_columns"][suppl_table]
-                                + metadata["join_columns"][suppl_table]
+                                [
+                                    ".".join([metadata["aliases"][suppl_table], c])
+                                    for c in metadata["projected_columns"][suppl_table]
+                                    + metadata["join_columns"][suppl_table]
+                                ]
                             )
                         )
                     )
@@ -945,7 +932,7 @@ class SolarWindsQuery(object):
 
             # self._module.fail_json(msg=str(indexed))
 
-            for i, r in enumerate(data):
+            for i, r in enumerate(base_query_res["results"]):
                 for joined_table in [
                     t
                     for t in metadata["suppl_tables"]
