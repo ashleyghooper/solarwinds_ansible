@@ -824,10 +824,18 @@ class SolarWindsQuery(object):
                 )
             )
 
-        data = []
+        data = {}
         if "results" in base_query_res:
             results = {}
             results[self._base_table] = base_query_res["results"]
+            data[self._base_table] = [
+                {
+                    k: v
+                    for k, v in sub.items()
+                    if k in metadata["projected_columns"][self._base_table]
+                }
+                for sub in base_query_res["results"]
+            ]
             indexed = {}
             data = results[self._base_table]
             for suppl_table in [
@@ -960,7 +968,15 @@ class SolarWindsQuery(object):
                     except Exception:
                         suppl_table_name = suppl_table
                     if tuple(keys) in indexed[suppl_table]:
-                        data[i][suppl_table_name] = indexed[suppl_table][tuple(keys)]
+                        # working[i][suppl_table_name] = indexed[suppl_table][tuple(keys)]
+                        data[i][suppl_table_name] = [
+                            {
+                                k: v
+                                for k, v in sub.items()
+                                if k in metadata["projected_columns"][joined_table]
+                            }
+                            for sub in indexed[suppl_table][tuple(keys)]
+                        ]
 
             # self._module.fail_json(msg=str(data))
 
