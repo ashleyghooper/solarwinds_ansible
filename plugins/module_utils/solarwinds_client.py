@@ -544,14 +544,30 @@ class SolarWindsQuery(object):
             # }
         # self._module.fail_json(msg=str(projected_columns))
 
-        joined_tables = [t for t in all_tables if t != base_table]
-        relations = self.relations(joined_tables)
+        supplemental_tables = [t for t in all_tables if t != base_table]
+        joined_tables = list(
+            set(
+                [t for t in self._include.keys() if t != base_table]
+                if self._include is not None
+                else [] + [t for t in self._exclude.keys() if t != base_table]
+                if self._exclude is not None
+                else []
+            )
+        )
+
+        # joined_tables = [
+        #     t
+        #     for t in [i for i in self._include if self._include[t] is not None]
+        #     + [e for e in self._exclude if self._exclude[t] is not None]
+        # ]
+        relations = self.relations(supplemental_tables)
 
         metadata = dict(
             all_tables=all_tables,
             aliases=aliases,
             base_table=base_table,
             joined_tables=joined_tables,
+            supplemental_tables=supplemental_tables,
             projected_columns=projected_columns,
             properties=properties,
             relations=relations,
@@ -666,6 +682,11 @@ class SolarWindsQuery(object):
         )
 
         # Add joins for secondary tables
+        # self._module.fail_json(
+        #     msg=str(metadata["joined_tables"])
+        #     + "\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\"
+        #     + str(metadata["supplemental_tables"])
+        # )
         for table in metadata["joined_tables"]:
             table_relation = metadata["relations"][table]
             source_type = table_relation["SourceType"]
@@ -753,19 +774,19 @@ class SolarWindsQuery(object):
             results[self._base_table] = base_query_res["results"]
             indexed = {}
             data = results[self._base_table]
-            for joined_table in [
+            for supplemental_table in [
                 t
-                for t in metadata["joined_tables"]
+                for t in metadata["supplemental_tables"]
                 if t in metadata["projected_columns"] and t in metadata["relations"]
             ]:
-                relation = metadata["relations"][joined_table]
+                relation = metadata["relations"][supplemental_table]
                 target_alias = metadata["aliases"][relation["TargetType"]]
                 suppl_query = (
                     QueryBuilder()
-                    .SELECT(*metadata["projected_columns"][joined_table])
+                    .SELECT(*metadata["projected_columns"][supplemental_table])
                     .FROM(
                         "{0} AS {1}".format(
-                            joined_table, metadata["aliases"][joined_table]
+                            supplemental_table, metadata["aliases"][supplemental_table]
                         )
                     )
                 )
@@ -800,11 +821,11 @@ class SolarWindsQuery(object):
                 except Exception as ex:
                     self._module.fail_json(
                         msg="Join query for joined table {0} failed: {1}".format(
-                            joined_table, str(ex)
+                            supplemental_table, str(ex)
                         )
                     )
 
-                results[joined_table] = join_query_res["results"]
+                results[supplemental_table] = join_query_res["results"]
 
                 indexed[joined_table] = {}
                 for r in results[joined_table]:
