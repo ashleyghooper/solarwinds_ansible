@@ -16,7 +16,7 @@ from collections import defaultdict
 from typing import NamedTuple
 
 
-class QueryBuilder(object):
+class SQLQueryBuilder(object):
     """
     Generic SQL query builder for Python, heavily based on
     https://death.andgravity.com/query-builder-how with minor tweaks to suit
