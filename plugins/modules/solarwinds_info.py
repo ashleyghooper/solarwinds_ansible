@@ -13,12 +13,12 @@ __metaclass__ = type
 
 DOCUMENTATION = r"""
 ---
-module: orion_node_info
+module: solarwinds_info
 
-short_description: Retrieve information about nodes in Solarwinds Orion NPM
+short_description: Retrieve information from SolarWinds
 
 description:
-  - Retrieve information about nodes in SolarWinds Orion NPM using the
+  - Retrieve information from SolarWinds using the
     L(SolarWinds Information Service,
     https://solarwinds.github.io/OrionSDK/2020.2/schema/Orion.Nodes.html)\
     (SWIS).
@@ -26,9 +26,9 @@ description:
     This means they will accept the standard SQL wildcard '%' for partial
     matching, but if the string does not contain the '%' wildcard, only
     exact matching will be performed. WARNING! Be very careful using
-    wildcards, since overuse of wildcards may place excessive load on the SWIS
-    SQL server and could even lead to a SolarWinds outage! Be attentive to any
-    queries that take more than a few seconds to run.
+    wildcards, since overuse of wildcards may affect performance of the
+    SolarWinds system/SQL server and may take a very long time to run!
+    Be attentive to any queries that take more than a few seconds to run.
   - If running against an Ansible inventory rather than localhost, consider
     using the 'throttle' option on the task to avoid overloading the SWIS SQL
     server.
@@ -36,9 +36,8 @@ description:
     the nodes that match all of the options - is returned.
   - When multiple values are provided for a single option, matching is against
     any one of these values.
-  - Most options use Ansible standard snake case, but options that directly
-    match properties of other entities, such as agents and custom properties,
-    use the raw SWIS column names.
+  - SWIS table and column (property) names match the SWIS schema (see above
+    link), although it should not be necessary for case to match.
   - Unfortunately, it's not a straightforward process to reliably determine the
     Operating System of a node. Some SWIS columns that may be of interest are
     Vendor, MachineType, NodeDescription. For nodes using SolarWinds agents,
@@ -54,129 +53,32 @@ author:
   - "Ashley Hooper (@ashleyghooper)"
 
 options:
-  filters:
+  base_table:
     description:
-      - Filters to determine which nodes are included in the query.
+      - The table to serve as the primary information source for the query.
+  columns:
+    description:
+      - Specification of which columns to include in output, in the form of a
+        dict of table names, with each element either being empty (in
+        which case all columns will be returned), or a list of columns.
     type: dict
-    suboptions:
-      node_id:
-        description:
-          - node_id of the node.
-        type: list
-        elements: int
-
-      dns:
-        description:
-          - The fully-qualified DNS domain name of the node, or partial DNS name
-            if wildcard used.
-        type: list
-        elements: str
-
-      caption:
-        description:
-          - The SolarWinds 'caption' for the node.
-        type: list
-        elements: str
-
-      sys_name:
-        description:
-          - Local system name as might be returned by the 'hostname' command.
-        type: list
-        elements: str
-
-      ip_address:
-        description:
-          - IP address, or partial ip address if wildcard used.
-        type: list
-        elements: str
-
-      object_sub_type:
-        description:
-          - The type of node.
-        choices: [ "agent", "icmp", "snmp", "wmi" ]
-        type: list
-        elements: str
-
-      polling_method:
-        description:
-          - The polling method - alias for object_sub_type.
-        choices: [ "agent", "icmp", "snmp", "wmi" ]
-        type: list
-        elements: str
-
-      polling_engine_id:
-        description:
-          - Id of the polling engine.
-        type: list
-        elements: int
-
-      snmp_version:
-        description:
-          - The version of SNMP, or 0 for non-SNMP.
-        choices: [ 0, 1, 2, 3 ]
-        type: list
-        elements: int
-
-      machine_type:
-        description:
-          - The type of device, as reported by the node when added.
-        type: list
-        elements: str
-
-      node_description:
-        description:
-          - Summary describing the device hardware and software.
-        type: list
-        elements: str
-
-      is_server:
-        description:
-          - Whether node is considered a server. Note that this is only as reliable
-            as your SolarWinds data.
-        type: bool
-
-      unmanaged:
-        description:
-          - Whether node is currently managed.
-        type: bool
-
-      status:
-        description:
-          - Node statuses to include, for example "Up", "Down", "Active",
-            "Critical", "Off", "Online", "Rebooting", and so on.
-          - Note that there are 40 distinct possible values, as per the StatusName
-            column in Orion.StatusInfo.
-        type: list
-        elements: str
-
-      severity_max:
-        description:
-          - The maximum severity to include.
-        type: int
-
-      severity_min:
-        description:
-          - The minimum severity to include.
-        type: int
-
-      vendor:
-        description:
-          - Vendor name.
-        type: list
-        elements: str
-
-      agent:
-        description:
-          - A map whose keys are the names of one or more columns in the
-            Orion.AgentManagement.Agent table and one or more values to match for
-            each.
-        type: dict
-
-      custom_properties:
-        description:
-          - A map whose keys are the names of one or more columns in the
-            Orion.CustomProperty table and one or more values to match for each.
-        type: dict
+  include:
+    description:
+      - Specification of filters for inclusion of data, in the form of a dict
+        of table names, with each element consisting of a dict of column names,
+        each containing either a single value or a list of values.
+        Additionally, there are two special subelements, 'min' and 'max'
+        which enable specifying ranges of values.
+        columns.
+    type: dict
+  exclude:
+    description:
+      - Specification of filters for exclusion of data, in the form of a dict
+        of table names, with each element consisting of a dict of column names,
+        each containing either a single value or a list of values.
+        Additionally, there are two special subelements, 'min' and 'max'
+        which enable specifying ranges of values.
+    type: dict
 
 requirements:
   - "python >= 2.6"
@@ -190,15 +92,20 @@ EXAMPLES = r"""
   gather_facts: no
   tasks:
     - name:  Run a regular SolarWinds Information Service query
-      anophelesgreyhoe.solarwinds.orion_node_info:
+      anophelesgreyhoe.solarwinds.solarwinds_info:
         solarwinds_connection:
           hostname: "{{ solarwinds_host }}"
           username: "{{ solarwinds_username }}"
           password: "{{ solarwinds_password }}"
-        filters:
-          snmp_version:
-            - 2
-            - 3
+        base_table: Orion.Nodes
+        columns:
+          Orion.Nodes:
+        include:
+          Orion.Nodes:
+            ObjectSubType: SNMP
+            SNMPVersion:
+              min: 1
+              max: 2
       delegate_to: localhost
 
 - name: Find all nodes in Australia with IP addresses starting with '10.100.0.'
@@ -206,16 +113,21 @@ EXAMPLES = r"""
   gather_facts: no
   tasks:
     - name:  Run a regular SolarWinds Information Service query
-      anophelesgreyhoe.solarwinds.orion_node_info:
+      anophelesgreyhoe.solarwinds.solarwinds_info:
         solarwinds_connection:
           hostname: "{{ solarwinds_host }}"
           username: "{{ solarwinds_username }}"
           password: "{{ solarwinds_password }}"
-        filters:
-          custom_properties:
+        base_table: Orion.Nodes
+        columns:
+          Orion.Nodes:
+          Orion.NodesCustomPropeties:
+            - Country
+        include:
+          Orion.Nodes:
+            IPAddress: "10.100.0.%"
+          Orion.NodesCustomPropeties:
             Country: Australia
-          ip_address:
-            - "10.100.0.%"
       delegate_to: localhost
 
 - name: Find all nodes currently having severity of 100 or higher
@@ -223,13 +135,47 @@ EXAMPLES = r"""
   gather_facts: no
   tasks:
     - name:  Run a regular SolarWinds Information Service query
-      anophelesgreyhoe.solarwinds.orion_node_info:
+      anophelesgreyhoe.solarwinds.solarwinds_info:
         solarwinds_connection:
           hostname: "{{ solarwinds_host }}"
           username: "{{ solarwinds_username }}"
           password: "{{ solarwinds_password }}"
-        filters:
-          severity_min: 100
+        base_table: Orion.Nodes
+        columns:
+          Orion.Nodes:
+        include:
+          Orion.Nodes:
+            Severity:
+              min: 100
+      delegate_to: localhost
+
+- name: Find nodes in Australia with current status of 'Down'
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name:  Run a regular SolarWinds Information Service query
+      anophelesgreyhoe.solarwinds.solarwinds_info:
+        solarwinds_connection:
+          hostname: "{{ solarwinds_host }}"
+          username: "{{ solarwinds_username }}"
+          password: "{{ solarwinds_password }}"
+        base_table: Orion.Nodes
+        columns:
+          Orion.Nodes:
+            - NodeID
+            - Caption
+            - IP
+            - StatusDescription
+          Orion.NodesCustomProperties:
+            - Country
+          Orion.StatusInfo:
+            - StatusName
+        include:
+          Orion.StatusInfo:
+            StatusName: Down
+        exclude:
+          Orion.NodesCustomProperties:
+            Country: Australia
       delegate_to: localhost
 """
 
@@ -268,93 +214,6 @@ class SolarWindsInfo(object):
     def __init__(self, solarwinds):
         self.solarwinds = solarwinds
         self.changed = False
-
-    def custom_properties(self, module):
-        query = "SELECT Field FROM Orion.CustomProperty WHERE TargetEntity = 'Orion.NodesCustomProperties'"
-        try:
-            query_res = self.solarwinds.client.query(query)
-        except Exception as ex:
-            module.fail_json(msg="Custom properties query failed: {0}".format(str(ex)))
-        if "results" in query_res and query_res["results"]:
-            return query_res["results"]
-        else:
-            return None
-
-    def node_agents(self, module, node_ids):
-        if not node_ids:
-            return None
-        agent_columns = [
-            "NodeID",
-            "AgentId",
-            "Name",
-            "Hostname",
-            "DNSName",
-            "IP",
-            "OSVersion",
-            "PollingEngineId",
-            "ConnectionStatus",
-            "ConnectionStatusMessage",
-            "ConnectionStatusTimestamp",
-            "AgentStatus",
-            "AgentStatusMessage",
-            "AgentStatusTimestamp",
-            "IsActiveAgent",
-            "Mode",
-            "AgentVersion",
-            "AutoUpdateEnabled",
-            "OrionIdColumn",
-            "PassiveAgentHostname",
-            "PassiveAgentPort",
-            "ProxyId",
-            "RegisteredOn",
-            "SID",
-            "Is64Windows",
-            "CPUArch",
-            "OSArch",
-            "OSDistro",
-            "ResponseTime",
-            "Type",
-            "RuntimeOSDistro",
-            "RuntimeOSVersion",
-            "RuntimeOSLabel",
-            "OSLabel",
-        ]
-        agent_projection = ", ".join(agent_columns)
-        query = (
-            "SELECT {0} FROM Orion.AgentManagement.Agent WHERE NodeID IN ({1})".format(
-                agent_projection, ", ".join([str(i) for i in node_ids])
-            )
-        )
-        try:
-            query_res = self.solarwinds.client.query(query)
-        except Exception as ex:
-            module.fail_json(msg="Node agent query failed: {0}".format(str(ex)))
-        if "results" in query_res and query_res["results"]:
-            return query_res["results"]
-        else:
-            return None
-
-    def node_custom_properties(self, module, node_ids):
-        if not node_ids:
-            return None
-        custom_properties = self.custom_properties(module)
-        custom_property_fields = [f["Field"] for f in custom_properties]
-        field_projection = ", ".join(["NodeID"] + custom_property_fields)
-        query = (
-            "SELECT {0} FROM Orion.NodesCustomProperties WHERE NodeID IN ({1})".format(
-                field_projection, ", ".join([str(i) for i in node_ids])
-            )
-        )
-        try:
-            query_res = self.solarwinds.client.query(query)
-        except Exception as ex:
-            module.fail_json(
-                msg="Node custom properties query failed: {0}".format(str(ex))
-            )
-        if "results" in query_res and query_res["results"]:
-            return query_res["results"]
-        else:
-            return None
 
     def info(self, module):
         query = SolarWindsQuery(module, self.solarwinds.client)
