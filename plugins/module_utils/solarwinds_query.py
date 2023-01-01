@@ -685,7 +685,7 @@ class SolarWindsQuery(object):
                 )
 
                 key_sets = []
-                for k in range(len(relation["SourcePrimaryKeyNames"])):
+                for k in range(len(relation["SourceForeignKeyNames"])):
                     try:
                         key_sets.append(
                             set(
