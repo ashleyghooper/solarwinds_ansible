@@ -31,13 +31,21 @@ else:
 
 
 def case_insensitive_key(d, k):
+    """Perform case-insensitive lookup in a dictionary for a key, and return list of values for all matching keys.
+
+    Positional arguments:
+    d -- dictionary in which to look up
+    k -- key to look up
+    """
     k = k.lower()
     return [d[key] for key in d if key.lower() == k]
 
 
 class SolarWindsEntityAlias(Enum):
     """
-    Map SolarWinds entity/table names to friendlier aliases.
+    Map SolarWinds entity/table names to friendlier aliases. This enables use
+    of alias names as inputs, and replacement of table names with aliases in
+    outputs.
     """
 
     Agents = "Orion.AgentManagement.Agent"
@@ -58,6 +66,12 @@ class SolarWindsEntityAlias(Enum):
 class SolarWindsQuery(object):
     """
     Class for facilitating dynamic SolarWinds Information Service queries.
+    This is intended to enable automatic generation of a query according to
+    the provided arguments, by querying the SolarWinds Information Service
+    schema to determine the following:
+    - cased column names
+    - data types
+    - tables and primary/foreign keys for joins between tables
     """
 
     @property
@@ -331,10 +345,9 @@ class SolarWindsQuery(object):
         Returns:
             a dictionary containing properties, relationships (joins), etc, for each table
         """
-        base_table = self._base_table
         properties = self.properties()
         all_tables = list(properties.keys())
-        base_table = [t for t in all_tables if t.lower() == base_table.lower()][0]
+        base_table = [t for t in all_tables if t.lower() == self._base_table.lower()][0]
         aliases = {
             t: "_".join([u for u in t if u.isupper()]).lower() for t in all_tables
         }
