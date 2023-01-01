@@ -506,8 +506,6 @@ class SolarWindsQuery(object):
 
     def execute(self):
         metadata = self.metadata()
-        # self._module.fail_json(msg=str(metadata))
-        # self._module.fail_json(msg=str(metadata["projected_columns"][self._base_table]))
         queries = []
         base_query = (
             SQLQueryBuilder()
@@ -528,13 +526,7 @@ class SolarWindsQuery(object):
                 )
             )
         )
-        # self._module.fail_json(str(base_query))
-        # Add joins for secondary tables
-        # self._module.fail_json(
-        #     msg=str(metadata["joined_tables"])
-        #     + "\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\"
-        #     + str(metadata["suppl_tables"])
-        # )
+
         for table in metadata["joined_tables"]:
             table_relation = metadata["relations"][table]
             source_type = table_relation["SourceType"]
@@ -587,7 +579,6 @@ class SolarWindsQuery(object):
                     filter_content = self._exclude[table][column]
                     data_type = metadata["properties"][table][column]["Type"]
                     column_filters = self.column_filters(data_type, filter_content)
-                    # self._module.fail_json(msg=column_criteria)
                     if not column_filters:
                         self._module.fail_json(
                             msg="Filter criteria '{0}' not valid for property '{1}.{2}' with data type of '{3}'".format(
@@ -604,15 +595,15 @@ class SolarWindsQuery(object):
 
                     base_query.WHERE("NOT ({0})".format(column_criteria_sql))
 
-        # self._module.fail_json(msg=str(query))
-
         try:
             base_query_res = self._client.query(str(base_query))
             queries.append(str(base_query))
         except Exception as ex:
             self._module.fail_json(
-                msg="Base query for table '{0}' failed: {1}".format(
-                    self._base_table, str(ex)
+                msg=(
+                    "Query for base table '{0}' failed. Query: '{1}'. Exception: {2}".format(
+                        self._base_table, str(base_query), str(ex)
+                    )
                 )
             )
 
@@ -673,14 +664,11 @@ class SolarWindsQuery(object):
                                 ]
                             )
                         )
-                    except Exception:
+                    except Exception as ex:
                         self._module.fail_json(
                             msg=str(
-                                "{0} ///////////////// {1} ///////////////// {2} ///////////////// {3}".format(
-                                    relation["SourcePrimaryKeyNames"],
-                                    relation["SourceForeignKeyNames"],
-                                    k,
-                                    results[self._base_table],
+                                "Failed to look up foreign key [{0}] to join base table '{1}' to supplemental table '{2}' : {3}".format(
+                                    k + 1, self._base_table, suppl_table, ex
                                 )
                             )
                         )
@@ -698,8 +686,8 @@ class SolarWindsQuery(object):
                     queries.append(str(suppl_query))
                 except Exception as ex:
                     self._module.fail_json(
-                        msg="Join query for joined table {0} failed: {1}".format(
-                            suppl_table, str(ex)
+                        msg="Join query for supplemental table '{0}' failed. Query: '{1}'. Exception: {2}".format(
+                            suppl_table, str(suppl_query), str(ex)
                         )
                     )
 
@@ -721,8 +709,10 @@ class SolarWindsQuery(object):
                             )
                         except Exception as ex:
                             self._module.fail_json(
-                                msg="{0} ////////////////////////// {1} ............................... {2}".format(
-                                    relation, r, ex
+                                msg=str(
+                                    "Failed to look up primary key [{0}] to join data from supplemental table '{1}' back to base table '{2}' : {3}".format(
+                                        k + 1, suppl_table, self._base_table, ex
+                                    )
                                 )
                             )
                     if not tuple(keys) in indexed[suppl_table]:
