@@ -208,7 +208,7 @@ else:
 
 class SolarWindsInfo(object):
     """
-    Object to retrieve information about nodes in Solarwinds Orion NPM.
+    Retrieve information from the SolarWinds Information Service (SWIS).
     """
 
     def __init__(self, solarwinds):
@@ -216,11 +216,22 @@ class SolarWindsInfo(object):
         self.changed = False
 
     def info(self, module):
+        params = module.params
+        solarwinds_query = SolarWindsQuery(module, self.solarwinds.client)
+        return solarwinds_query.query(
+            params["base_table"],
+            params["columns"],
+            params["include"],
+            module.params["exclude"],
+        )
+        # TODO: Clean up
+        query_res = query.execute()
+        return query_res
         query = SolarWindsQuery(module, self.solarwinds.client)
         query.base_table = module.params["base_table"]
+        query.input_columns = module.params["columns"]
         query.input_include = module.params["include"]
         query.input_exclude = module.params["exclude"]
-        query.input_columns = module.params["columns"]
         query_res = query.execute()
         return query_res
 
