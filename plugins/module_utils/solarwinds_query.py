@@ -91,21 +91,22 @@ class SolarWindsQuery(object):
 
     def query(
         self,
-        base_table,
-        columns,
-        includes,
-        excludes,
+        input_base_table,
+        input_columns,
+        input_includes,
+        input_excludes,
     ):
+        base_table = self.table_name(input_base_table)
         self._inputs = {
-            "base_table": self.table_name(base_table),
-            "columns": {self.table_name(t): columns[t] for t in columns}
-            if columns is not None
+            "base_table": base_table,
+            "columns": {self.table_name(t): input_columns[t] for t in input_columns}
+            if input_columns is not None
             else {},
-            "includes": {self.table_name(t): includes[t] for t in includes}
-            if includes is not None
+            "includes": {self.table_name(t): input_includes[t] for t in input_includes}
+            if input_includes is not None
             else {},
-            "excludes": {self.table_name(t): excludes[t] for t in excludes}
-            if excludes is not None
+            "excludes": {self.table_name(t): input_excludes[t] for t in input_excludes}
+            if input_excludes is not None
             else {},
         }
         self._params = {}
@@ -579,7 +580,7 @@ class SolarWindsQuery(object):
             real_table = [t for t in all_tables if t.lower() == table.lower()][0]
             if not "columns" in self._params or not self._params["columns"]:
                 self._params["columns"] = {}
-            # self._module.fail_json(msg=str(self._params["columns"]))
+            # TODO: self._module.fail_json(msg=str(self._params["columns"]))
             self._params["columns"][real_table] = []
             if self._inputs["columns"][table] is not None:
                 unmatched_columns = [
