@@ -87,6 +87,19 @@ requirements:
 """
 
 EXAMPLES = r"""
+- name: Get details of all SolarWinds polling engines
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Run a regular SolarWinds Information Service query
+      anophelesgreyhoe.solarwinds.solarwinds_info:
+        solarwinds_connection:
+          hostname: "{{ orion_hostname }}"
+          username: "{{ orion_username }}"
+          password: "{{ orion_password }}"
+        base_table: Orion.Engines
+      delegate_to: localhost
+
 - name: Find all nodes that are polled using SNMP v1 or v2
   hosts: localhost
   gather_facts: no
@@ -222,18 +235,8 @@ class SolarWindsInfo(object):
             params["base_table"],
             params["columns"],
             params["include"],
-            module.params["exclude"],
+            params["exclude"],
         )
-        # TODO: Clean up
-        query_res = query.execute()
-        return query_res
-        query = SolarWindsQuery(module, self.solarwinds.client)
-        query.base_table = module.params["base_table"]
-        query.input_columns = module.params["columns"]
-        query.input_include = module.params["include"]
-        query.input_exclude = module.params["exclude"]
-        query_res = query.execute()
-        return query_res
 
 
 # ==============================================================
@@ -271,9 +274,7 @@ def main():
 
     solarwinds = SolarWindsClient(module)
     info = SolarWindsInfo(solarwinds)
-
     res_args = dict(changed=False, info=info.info(module))
-
     module.exit_json(**res_args)
 
 

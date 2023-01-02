@@ -192,17 +192,7 @@ class SolarWindsQuery(object):
                 target_alias = metadata["aliases"][relation["TargetType"]]
                 suppl_query = (
                     SQLQueryBuilder()
-                    .SELECT(
-                        *list(
-                            set(
-                                [
-                                    ".".join([metadata["aliases"][suppl_table], c])
-                                    for c in metadata["projected_columns"][suppl_table]
-                                    + metadata["join_columns"][suppl_table]
-                                ]
-                            )
-                        )
-                    )
+                    .SELECT(*self.projected_columns(suppl_table))
                     .FROM(
                         "{0} AS {1}".format(
                             suppl_table, metadata["aliases"][suppl_table]
@@ -240,6 +230,26 @@ class SolarWindsQuery(object):
                                 )
                             )
                         )
+
+                    # Apply relevant filters to nested records
+                    if (
+                        "includes" in self._params
+                        and self._params["includes"]
+                        and suppl_table in self._params["includes"]
+                    ):
+                        suppl_query.WHERE(
+                            self.where_clause(self._params["includes"], [suppl_table])
+                        )
+                    if (
+                        "excludes" in self._params
+                        and self._params["excludes"]
+                        and suppl_table in self._params["excludes"]
+                    ):
+                        suppl_query.WHERE(
+                            self.where_clause(self._params["excludes"], [suppl_table])
+                        )
+
+                    # Join to rows in base table
                     suppl_query.WHERE(
                         "{0} IN ({1})".format(
                             ".".join(
