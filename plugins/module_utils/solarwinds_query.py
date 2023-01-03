@@ -54,6 +54,7 @@ class SolarWindsEntityAlias(Enum):
     Interfaces = "Orion.NPM.Interfaces"
     Nodes = "Orion.Nodes"
     PollingEngines = "Orion.Engines"
+    Status = "Orion.StatusInfo"
     Volumes = "Orion.Volumes"
 
     @classmethod
@@ -109,13 +110,17 @@ class SolarWindsQuery(object):
             if input_excludes is not None
             else {},
         }
-        self._params = {}
-        # TODO: self._module.fail_json(msg=str(self._params))
         self._metadata = self.metadata(inputs)
-        # TODO: self._module.fail_json(msg=str(self._params))
+        # Set local variables from metadata for convenience
         metadata = self._metadata
         aliases = metadata["aliases"]
+        all_tables = metadata["all_tables"]
         base_table = metadata["base_table"]
+        joined_tables = metadata["joined_tables"]
+        params = metadata["params"]
+        projected_columns = metadata["projected_columns"]
+        relations = metadata["relations"]
+        suppl_tables = metadata["suppl_tables"]
 
         queries = []
         base_query = (
@@ -129,8 +134,8 @@ class SolarWindsQuery(object):
             )
         )
 
-        for table in metadata["joined_tables"]:
-            table_relation = metadata["relations"][table]
+        for table in joined_tables:
+            table_relation = relations[table]
             source_type = table_relation["SourceType"]
             target_type = table_relation["TargetType"]
             join_columns = [
@@ -147,17 +152,12 @@ class SolarWindsQuery(object):
                 "{0} AS {1} ON {2}".format(table, aliases[table], "".join(join_columns))
             )
 
-        # TODO: self._module.fail_json(msg=str(self._params))
         # Add filters
-        if "includes" in self._params and self._params["includes"]:
+        if "includes" in params and params["includes"]:
+            base_query.WHERE(self.where_clause(params["includes"], all_tables))
+        if "excludes" in params and params["excludes"]:
             base_query.WHERE(
-                self.where_clause(self._params["includes"], metadata["all_tables"])
-            )
-        if "excludes" in self._params and self._params["excludes"]:
-            base_query.WHERE(
-                "NOT {0}".format(
-                    self.where_clause(self._params["excludes"], metadata["all_tables"])
-                )
+                "NOT {0}".format(self.where_clause(params["excludes"], all_tables))
             )
 
         try:
@@ -177,20 +177,14 @@ class SolarWindsQuery(object):
             results = {}
             results[base_table] = base_query_res["results"]
             data = [
-                {
-                    k: v
-                    for k, v in sub.items()
-                    if k in metadata["projected_columns"][base_table]
-                }
+                {k: v for k, v in sub.items() if k in projected_columns[base_table]}
                 for sub in base_query_res["results"]
             ]
             indexed = {}
             for suppl_table in [
-                t
-                for t in metadata["suppl_tables"]
-                if t in metadata["projected_columns"] and t in metadata["relations"]
+                t for t in suppl_tables if t in projected_columns and t in relations
             ]:
-                relation = metadata["relations"][suppl_table]
+                relation = relations[suppl_table]
                 suppl_query = (
                     SQLQueryBuilder()
                     .SELECT(*self.projected_columns(suppl_table))
@@ -230,20 +224,20 @@ class SolarWindsQuery(object):
 
                     # Apply relevant filters to nested records
                     if (
-                        "includes" in self._params
-                        and self._params["includes"]
-                        and suppl_table in self._params["includes"]
+                        "includes" in params
+                        and params["includes"]
+                        and suppl_table in params["includes"]
                     ):
                         suppl_query.WHERE(
-                            self.where_clause(self._params["includes"], [suppl_table])
+                            self.where_clause(params["includes"], [suppl_table])
                         )
                     if (
-                        "excludes" in self._params
-                        and self._params["excludes"]
-                        and suppl_table in self._params["excludes"]
+                        "excludes" in params
+                        and params["excludes"]
+                        and suppl_table in params["excludes"]
                     ):
                         suppl_query.WHERE(
-                            self.where_clause(self._params["excludes"], [suppl_table])
+                            self.where_clause(params["excludes"], [suppl_table])
                         )
 
                     # Join to rows in base table
@@ -306,11 +300,9 @@ class SolarWindsQuery(object):
 
             for i, r in enumerate(base_query_res["results"]):
                 for suppl_table in [
-                    t
-                    for t in metadata["suppl_tables"]
-                    if t in metadata["projected_columns"] and t in metadata["relations"]
+                    t for t in suppl_tables if t in projected_columns and t in relations
                 ]:
-                    relation = metadata["relations"][suppl_table]
+                    relation = relations[suppl_table]
                     keys = []
                     for k in range(len(relation["SourcePrimaryKeyNames"])):
                         keys.append(
@@ -330,7 +322,7 @@ class SolarWindsQuery(object):
                             {
                                 k: v
                                 for k, v in sub.items()
-                                if k in metadata["projected_columns"][suppl_table]
+                                if k in projected_columns[suppl_table]
                             }
                             for sub in indexed[suppl_table][tuple(keys)]
                         ]
@@ -385,15 +377,13 @@ class SolarWindsQuery(object):
         joined_tables = list(
             set(
                 (
-                    [i for i in self._params["includes"].keys() if i != base_table]
-                    if "includes" in self._params
-                    and self._params["includes"] is not None
+                    [i for i in params["includes"].keys() if i != base_table]
+                    if "includes" in params and params["includes"] is not None
                     else []
                 )
                 + (
-                    [e for e in self._params["excludes"].keys() if e != base_table]
-                    if "excludes" in self._params
-                    and self._params["excludes"] is not None
+                    [e for e in params["excludes"].keys() if e != base_table]
+                    if "excludes" in params and params["excludes"] is not None
                     else []
                 )
             )
@@ -613,26 +603,26 @@ class SolarWindsQuery(object):
                 )
             )
 
-            table_relations = {r["TargetType"]: r for r in relations_res["results"]}
-
             # Add relation between Orion.Nodes and Orion.StatusInfo that is not
             # represented in Metadata.Relationship.
 
-            table_relations.update(
-                {
-                    "Orion.StatusInfo": {
-                        "SourceType": "Orion.Nodes",
-                        "TargetType": "Orion.StatusInfo",
-                        "SourcePrimaryKeyNames": ["Status"],
-                        "SourceForeignKeyNames": ["StatusId"],
-                        "SourceCardinalityMin": "1",
-                        "SourceCardinalityMax": "1",
-                        "TargetPrimaryKeyNames": [],
-                        "TargetForeignKeyNames": [],
-                        "TargetCardinalityMin": "0",
-                        "TargetCardinalityMax": "*",
-                    }
+            table_relations = {
+                "Orion.StatusInfo": {
+                    "SourceType": "Orion.Nodes",
+                    "TargetType": "Orion.StatusInfo",
+                    "SourcePrimaryKeyNames": ["Status"],
+                    "SourceForeignKeyNames": ["StatusId"],
+                    "SourceCardinalityMin": "1",
+                    "SourceCardinalityMax": "1",
+                    "TargetPrimaryKeyNames": [],
+                    "TargetForeignKeyNames": [],
+                    "TargetCardinalityMin": "0",
+                    "TargetCardinalityMax": "*",
                 }
+            }
+
+            table_relations.update(
+                {r["TargetType"]: r for r in relations_res["results"]}
             )
 
             unmatched_tables = [
@@ -709,7 +699,6 @@ class SolarWindsQuery(object):
                         filters.append(("=", criterion))
                 elif data_type in ["System.Single", "System.Double"]:
                     if not isinstance(criterion, float) and not re.match(
-                        # criterion, "[0-9]+(\\.[0-9]+)?"
                         criterion,
                         "\d+(\.\d+)?",
                     ):
