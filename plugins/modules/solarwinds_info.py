@@ -22,16 +22,16 @@ description:
     L(SolarWinds Information Service,
     https://solarwinds.github.io/OrionSDK/2020.2/schema/Orion.Nodes.html)\
     (SWIS).
-  - All options that use the 'str' data type use the SQL 'LIKE' operator.
-    This means they will accept the standard SQL wildcard '%' for partial
-    matching, but if the string does not contain the '%' wildcard, only
-    exact matching will be performed. WARNING! Be very careful using
-    wildcards, since overuse of wildcards may affect performance of the
-    SolarWinds system/SQL server and may take a very long time to run!
-    Be attentive to any queries that take more than a few seconds to run.
+  - All options that use the C(str) data type use the SQL C(LIKE) operator.
+    This means they will accept the standard SQL wildcard C(%) for partial
+    matching, but if the string does not contain the C(%) wildcard, only
+    exact matching will be performed. WARNING! Be careful using wildcards,
+    since poorly specified queries may take a long time to run and their could
+    be some performance impact on the SolarWinds system/SQL server. Be
+    attentive to any queries that take more than a few seconds to run.
   - If running against an Ansible inventory rather than localhost, consider
-    using the 'throttle' option on the task to avoid overloading the SWIS SQL
-    server.
+    using the C(throttle) option on the Ansible task to avoid overloading
+    the SWIS SQL server.
   - When multiple options are provided, the intersection - in other words,
     the nodes that match all of the options - is returned.
   - When multiple values are provided for a single option, matching is against
@@ -41,8 +41,8 @@ description:
   - Unfortunately, it's not a straightforward process to reliably determine the
     Operating System of a node. Some SWIS columns that may be of interest are
     Vendor, MachineType, NodeDescription. For nodes using SolarWinds agents,
-    there are also OSDistro, RuntimeOSDistro, RuntimeOSLabel, and OSLabel in
-    the Orion.AgentManagement.Agent table.
+    there are also C(OSDistro), C(RuntimeOSDistro), C(RuntimeOSLabel), and
+    C(OSLabel) in the C(Orion.AgentManagement.Agent) table.
 
 extends_documentation_fragment:
   - anophelesgreyhoe.solarwinds.solarwinds_client
@@ -53,28 +53,63 @@ author:
   - "Ashley Hooper (@ashleyghooper)"
 
 options:
-  output:
+  base_table:
     description:
-      - Specification of columns to include in output, in the form of a
-        dict containing table names, with each element either being empty (in
-        which case all columns will be returned), or a list of columns.
+      - Specification of the SWIS table to base the query upon and the columns
+        to be included.
+    required: true
     type: dict
+    suboptions:
+      name:
+        description:
+          - Name of the SWIS table the query should be based upon.
+        type: str
+        required: true
+
+      all_columns:
+        description:
+          - Whether to look up all columns for the table.
+        type: bool
+        required: false
+        default: false
+
+      columns:
+        description:
+          - The list of columns to include in the query.
+        type: list
+        elements: str
+        required: false
+
+  nested_entities:
+    description:
+      - Specification of entities that are accessible from the base table,
+        e.g. C(Agent), C(Interfaces), C(Volumes), etc.
+      - Each key should be the relative name of the nested entity, so for
+        example, for the base table C(Orion.Nodes), the nested entity
+        C(Orion.Nodes.Interfaces) is accessible via C(Interfaces).
+      - For each nested entity, individual columns can be specified below
+        via the I(columns) option, or alternatively all columns can be returned
+        if I(all_columns=yes) is provided.
+    type: dict
+
   include:
     description:
-      - Specification of filters for inclusion of data, in the form of a dict
-        of table names, with each element consisting of a dict of column names,
-        each containing either a single value or a list of values.
-        Additionally, there are two special subelements, 'min' and 'max'
-        which enable specifying ranges of values.
-        columns.
+      - Specification of filters for inclusion of data, in the form of a
+        C(dict) containing qualified column names within the base table (for
+        example, C(CustomProperties.Country)), each of which specifying a
+        single value, a list of values, or a range (see below).
+      - Ranges may be specified via two special subelements for any column,
+        I(min) and I(max) which enable specifying ranges of values.
     type: dict
+
   exclude:
     description:
-      - Specification of filters for exclusion of data, in the form of a dict
-        of table names, with each element consisting of a dict of column names,
-        each containing either a single value or a list of values.
-        Additionally, there are two special subelements, 'min' and 'max'
-        which enable specifying ranges of values.
+      - Specification of filters for exclusion of data, in the form of a
+        C(dict) containing qualified column names within the base table (for
+        example, C(CustomProperties.Country)), each of which specifying a
+        single value, a list of values, or a range (see below).
+      - Ranges may be specified via two special subelements for any column,
+        I(min) and I(max) which enable specifying ranges of values.
     type: dict
 
 requirements:
@@ -94,7 +129,9 @@ EXAMPLES = r"""
           hostname: "{{ orion_hostname }}"
           username: "{{ orion_username }}"
           password: "{{ orion_password }}"
-        base_table: Orion.Engines
+        base_table:
+          name: Orion.Engines
+          all_columns: yes
       delegate_to: localhost
 
 - name: Find all nodes that are polled using SNMP v1 or v2
@@ -107,15 +144,14 @@ EXAMPLES = r"""
           hostname: "{{ solarwinds_host }}"
           username: "{{ solarwinds_username }}"
           password: "{{ solarwinds_password }}"
-        base_table: Orion.Nodes
-        columns:
-          Orion.Nodes:
+        base_table:
+          name: Orion.Nodes
+          all_columns: yes
         include:
-          Orion.Nodes:
-            ObjectSubType: SNMP
-            SNMPVersion:
-              min: 1
-              max: 2
+          ObjectSubType: SNMP
+          SNMPVersion:
+            min: 1
+            max: 2
       delegate_to: localhost
 
 - name: Find all nodes in Australia with IP addresses starting with '10.100.0.'
@@ -128,16 +164,16 @@ EXAMPLES = r"""
           hostname: "{{ solarwinds_host }}"
           username: "{{ solarwinds_username }}"
           password: "{{ solarwinds_password }}"
-        base_table: Orion.Nodes
-        columns:
-          Orion.Nodes:
+        base_table:
+          name: Orion.Nodes
+          all_columns: yes
+        nested_entities:
           Orion.NodesCustomPropeties:
-            - Country
+            columns:
+              - Country
         include:
-          Orion.Nodes:
-            IPAddress: "10.100.0.%"
-          Orion.NodesCustomPropeties:
-            Country: Australia
+          IPAddress: "10.100.0.%"
+          CustomProperties.Country: Australia
       delegate_to: localhost
 
 - name: Find all nodes currently having severity of 100 or higher
@@ -150,13 +186,12 @@ EXAMPLES = r"""
           hostname: "{{ solarwinds_host }}"
           username: "{{ solarwinds_username }}"
           password: "{{ solarwinds_password }}"
-        base_table: Orion.Nodes
-        columns:
-          Orion.Nodes:
+        base_table:
+          name: Orion.Nodes
+          all_columns: yes
         include:
-          Orion.Nodes:
-            Severity:
-              min: 100
+          Severity:
+            min: 100
       delegate_to: localhost
 
 - name: Find nodes in Australia with current status of 'Down'
@@ -169,23 +204,21 @@ EXAMPLES = r"""
           hostname: "{{ solarwinds_host }}"
           username: "{{ solarwinds_username }}"
           password: "{{ solarwinds_password }}"
-        base_table: Orion.Nodes
-        columns:
-          Orion.Nodes:
+        base_table:
+          name: Orion.Nodes
+          columns:
             - NodeID
             - Caption
             - IP
             - StatusDescription
-          Orion.NodesCustomProperties:
-            - Country
-          Orion.StatusInfo:
-            - StatusName
+        nested_entities:
+          CustomProperties:
+            columns:
+              - Country
         include:
-          Orion.StatusInfo:
-            StatusName: Down
+          Status: 2
         exclude:
-          Orion.NodesCustomProperties:
-            Country: Australia
+          CustomProperties.Country: Australia
       delegate_to: localhost
 """
 

@@ -83,7 +83,7 @@ class SQLQueryBuilder(object):
         return keyword, ""
 
     def _resolve_flags(self, keyword):
-        prefix, _, flag = keyword.partition(" ")
+        prefix, _, flag = keyword.partition(" ")  # pylint: disable=disallowed-name
         if prefix in self.flag_keywords:
             if flag and flag not in self.flag_keywords[prefix]:
                 raise ValueError("invalid flag for {0}: {1!r}".format(prefix, flag))

@@ -59,12 +59,18 @@ class SolarWindsQuery(object):
     def query(
         self,
         in_base_table,
-        in_nested_entities={},
-        in_includes={},
-        in_excludes={},
+        in_nested_entities,
+        in_includes,
+        in_excludes,
     ):
         queries = []
         base_table = in_base_table
+        if in_nested_entities is None:
+            in_nested_entities = {}
+        if in_includes is None:
+            in_includes = {}
+        if in_excludes is None:
+            in_excludes = {}
         output_format = self.output_format(in_base_table, in_nested_entities)
 
         base_table_name = base_table["name"]
@@ -82,7 +88,9 @@ class SolarWindsQuery(object):
         if in_includes:
             query.WHERE(self.where_clause(base_table_name, in_includes))
         if in_excludes:
-            query.WHERE("NOT {0}".format(self.where_clause(base_table_name, in_excludes)))
+            query.WHERE(
+                "NOT {0}".format(self.where_clause(base_table_name, in_excludes))
+            )
 
         try:
             queries.append(str(query))
@@ -138,7 +146,7 @@ class SolarWindsQuery(object):
                                 indexed[hashed][child_table].append(nested)
                     last_hashed = hashed
 
-                data = [v for v in indexed.values()]
+                data = list(indexed.values())
 
         info = {
             "data": data,
@@ -176,7 +184,7 @@ class SolarWindsQuery(object):
                     else []
                 )
             )
-            if not "." in c
+            if "." not in c
         ]
 
         all_nested_entities = list(
@@ -248,16 +256,17 @@ class SolarWindsQuery(object):
         return properties
 
     def projected_columns(self, base_table_name, output):
-        projected_columns = [
-            c
-            for c in (
-                output["columns"]
-                if "columns" in output and isinstance(output["columns"], list)
-                else []
+        projected_columns = list(
+            list(
+                (
+                    output["columns"]
+                    if "columns" in output and isinstance(output["columns"], list)
+                    else []
+                )
             )
             + [
-                "{0}.{1}.{2} AS {3}{4}".format(
-                    table_alias(base_table_name), t, c, nested_column_prefix(t), c
+                "{a}.{t}.{c} AS {p}{c}".format(
+                    a=table_alias(base_table_name), t=t, c=c, p=nested_column_prefix(t)
                 )
                 for t in (
                     output["nested"]
@@ -266,7 +275,7 @@ class SolarWindsQuery(object):
                 )
                 for c in output["nested"][t]["columns"]
             ]
-        ]
+        )
         return projected_columns
 
     def column_filters(self, filter_content):

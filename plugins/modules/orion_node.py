@@ -15,7 +15,7 @@ DOCUMENTATION = r"""
 ---
 module: orion_node
 
-short_description: Create/removes/edit nodes in SolarWinds Orion NPM
+short_description: Create/remove/modify nodes in SolarWinds Orion NPM
 
 description:
   - Manage nodes in SolarWinds Orion NPM.
@@ -1319,11 +1319,13 @@ def main():
 
     try:
         caption = module.params["caption"]
-        assert isinstance(caption, str) and len(caption) > 0
+        if not isinstance(caption, str) or not caption:
+            raise AssertionError("Caption not provided, not string, or empty")
     except Exception:
         try:
             caption = module.params["node_name"]
-            assert isinstance(caption, str) and len(caption) > 0
+            if not isinstance(caption, str) or not caption:
+                raise AssertionError("Node name not provided, not string, or empty")
         except Exception:
             caption = module.params["ip_address"]
 
