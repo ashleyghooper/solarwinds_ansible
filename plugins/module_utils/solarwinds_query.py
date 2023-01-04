@@ -14,20 +14,9 @@ import json
 import traceback
 from datetime import datetime
 
-from ansible.module_utils.basic import missing_required_lib
-
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.sql_query_builder import (
     SQLQueryBuilder,
 )
-
-ORIONSDK_IMPORT_ERROR = None
-try:
-    from orionsdk import SwisClient
-except ImportError:
-    HAS_ORIONSDK = False
-    ORIONSDK_IMPORT_ERROR = traceback.format_exc()
-else:
-    HAS_ORIONSDK = True
 
 
 class SolarWindsQuery(object):
@@ -45,10 +34,12 @@ class SolarWindsQuery(object):
 
     def nested_column_prefix(self, table_name):
         """
-        Return a unique prefix based on the table name for use as a prefix
+        Return a unique prefix derived from the table name for use as a prefix
         for nested columns.
         """
-        return "{0}_".format(hashlib.sha1(table_name.encode("utf-8")).hexdigest()[0:8])
+        return "{0}{1}_".format(
+            table_name[0], hashlib.sha1(table_name.encode("utf-8")).hexdigest()[0:4]
+        )
 
     def __init__(self, module, solarwinds_client):
         self._module = module
@@ -170,7 +161,7 @@ class SolarWindsQuery(object):
                         for child_table in output["children"].keys():
                             column_prefix = self.nested_column_prefix(child_table)
                             nested = {
-                                k.lstrip(column_prefix): v
+                                k.replace(column_prefix, ""): v
                                 for k, v in row.items()
                                 if k not in output["columns"]
                                 and k.startswith(column_prefix)
