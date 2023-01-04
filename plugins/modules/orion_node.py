@@ -235,7 +235,7 @@ from ansible.module_utils.basic import AnsibleModule, missing_required_lib
 from ansible.module_utils._text import to_native
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarwinds_client import (
     SolarWindsClient,
-    solarWindsclient_argument_spec,
+    solarwindsclient_argument_spec,
 )
 
 # Basic UTC timezone for python2.7 compatibility
@@ -718,7 +718,7 @@ class OrionNode(object):
                 " ".join(
                     [
                         "SELECT n.NodeID, Caption, n.Uri FROM Orion.DiscoveryProfiles dp",
-                        "INNER JOIN Orion.DiscoveredNodes dn"
+                        "INNER JOIN Orion.DiscoveredNodes dn",
                         "ON dn.ProfileID = dp.ProfileID AND dn.InstanceSiteID = dp.InstanceSiteID",
                         "INNER JOIN Orion.Nodes n",
                         "ON ((n.DNS = dn.DNS AND n.InstanceSiteID = dn.InstanceSiteID)",
@@ -1311,7 +1311,7 @@ def main():
             msg=missing_required_lib("requests"), exception=REQUESTS_IMPORT_ERROR
         )
 
-    solarwinds = SolarwindsClient(module)
+    solarwinds = SolarWindsClient(module)
     orion_node = OrionNode(solarwinds)
 
     node = orion_node.node(module)
@@ -1319,9 +1319,11 @@ def main():
 
     try:
         caption = module.params["caption"]
+        assert isinstance(caption, str) and len(caption) > 0
     except Exception:
         try:
             caption = module.params["node_name"]
+            assert isinstance(caption, str) and len(caption) > 0
         except Exception:
             caption = module.params["ip_address"]
 
