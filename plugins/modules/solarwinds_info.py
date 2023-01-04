@@ -230,8 +230,7 @@ class SolarWindsInfo(object):
         solarwinds_query = SolarWindsQuery(module, self.solarwinds.client)
         return solarwinds_query.query(
             params["base_table"],
-            params["output"]["columns"],
-            params["output"]["children"],
+            params["nested_entities"],
             params["include"],
             params["exclude"],
         )
@@ -245,15 +244,17 @@ def main():
 
     argument_spec = dict(
         base_table=dict(
-            type="str",
-        ),
-        output=dict(
             type="dict",
             options=dict(
+                name=dict(type="str", required=True),
+                all_columns=dict(type="bool", default=False),
                 columns=dict(type="list", elements="str", default=[]),
-                children=dict(type="dict", default={}),
             ),
-            default=dict(columns=[], children={}),
+            required=True,
+        ),
+        nested_entities=dict(
+            type="dict",
+            default={},
         ),
         include=dict(type="dict"),
         exclude=dict(type="dict"),
@@ -263,7 +264,6 @@ def main():
 
     module = AnsibleModule(
         argument_spec=argument_spec,
-        required_one_of=[["output", "include", "exclude"]],
         supports_check_mode=True,
     )
 

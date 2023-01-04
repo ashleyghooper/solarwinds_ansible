@@ -18,6 +18,32 @@ from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.sql_qu
     SQLQueryBuilder,
 )
 
+# Utility functions
+
+
+def table_alias(table_name):
+    """
+    Return the alias for a table.
+    """
+    return "_".join([u for u in table_name if u.isupper()]).lower()
+
+
+def nested_column_prefix(table_name):
+    """
+    Return a unique prefix derived from the table name for use as a prefix
+    for nested columns.
+    """
+    return "{0}{1}_".format(
+        table_name[0], hashlib.sha1(table_name.encode("utf-8")).hexdigest()[0:4]
+    )
+
+
+def dict_key_is_truthy(dictionary, key, type):
+    """
+    Check key exists in a dictionary, is of the specified type, and has a truthy value.
+    """
+    return key in dictionary and isinstance(dictionary[key], type) and dictionary[key]
+
 
 class SolarWindsQuery(object):
     """
@@ -26,21 +52,6 @@ class SolarWindsQuery(object):
     the provided arguments, along with nesting of subordinate entities.
     """
 
-    def table_alias(self, table_name):
-        """
-        Return the alias for a table.
-        """
-        return "_".join([u for u in table_name if u.isupper()]).lower()
-
-    def nested_column_prefix(self, table_name):
-        """
-        Return a unique prefix derived from the table name for use as a prefix
-        for nested columns.
-        """
-        return "{0}{1}_".format(
-            table_name[0], hashlib.sha1(table_name.encode("utf-8")).hexdigest()[0:4]
-        )
-
     def __init__(self, module, solarwinds_client):
         self._module = module
         self._client = solarwinds_client
@@ -48,60 +59,16 @@ class SolarWindsQuery(object):
     def query(
         self,
         in_base_table,
-        in_output_columns=[],
-        in_output_children={},
+        in_nested_entities={},
         in_includes={},
         in_excludes={},
     ):
         queries = []
         base_table = in_base_table
-        output = {}
-        output["columns"] = [
-            (c)
-            for c in (in_output_columns if isinstance(in_output_columns, list) else [])
-            if not "." in c
-        ]
+        output_format = self.output_format(in_base_table, in_nested_entities)
 
-        output["children"] = {
-            c.split(".")[0]: {"columns": c.split(".")[1]}
-            for c in (in_output_columns if isinstance(in_output_columns, list) else [])
-            if "." in c
-        }
-        output["children"].update(
-            {
-                t: {
-                    "columns": [
-                        c
-                        for c in (
-                            in_output_children[t]
-                            if isinstance(in_output_children, dict)
-                            else {}
-                        )
-                    ]
-                }
-                for t in in_output_children
-            }
-        )
-
-        projected_columns = [
-            c
-            for c in (
-                output["columns"]
-                if "columns" in output and isinstance(output["columns"], list)
-                else []
-            )
-            + [
-                "{0}.{1}.{2} AS {3}{4}".format(
-                    self.table_alias(base_table), t, c, self.nested_column_prefix(t), c
-                )
-                for t in (
-                    output["children"]
-                    if "children" in output and isinstance(output["children"], dict)
-                    else {}
-                )
-                for c in output["children"][t]["columns"]
-            ]
-        ]
+        base_table_name = base_table["name"]
+        projected_columns = self.projected_columns(base_table_name, output_format)
         if not projected_columns:
             # Minimal column projection to ensure a valid SQL query
             projected_columns = [("no_output_columns", "1")]
@@ -109,13 +76,13 @@ class SolarWindsQuery(object):
         query = (
             SQLQueryBuilder()
             .SELECT(*projected_columns)
-            .FROM("{0} AS {1}".format(base_table, self.table_alias(base_table)))
+            .FROM("{0} AS {1}".format(base_table_name, table_alias(base_table_name)))
         )
 
         if in_includes:
-            query.WHERE(self.where_clause(base_table, in_includes))
+            query.WHERE(self.where_clause(base_table_name, in_includes))
         if in_excludes:
-            query.WHERE("NOT {0}".format(self.where_clause(base_table, in_excludes)))
+            query.WHERE("NOT {0}".format(self.where_clause(base_table_name, in_excludes)))
 
         try:
             queries.append(str(query))
@@ -124,14 +91,14 @@ class SolarWindsQuery(object):
             self._module.fail_json(
                 msg=(
                     "Query for base table '{0}' failed. Queries: {1}. Exception: {2}".format(
-                        base_table, str(queries), str(ex)
+                        base_table_name, str(queries), str(ex)
                     )
                 )
             )
 
         data = []
-        if "results" in query_res and query_res["results"]:
-            if not "children" in output or not output["children"]:
+        if dict_key_is_truthy(query_res, "results", list):
+            if not dict_key_is_truthy(output_format, "nested", dict):
                 # No grouping/nesting required
                 data = query_res["results"]
             else:
@@ -143,27 +110,26 @@ class SolarWindsQuery(object):
                         for k, v in row.items()
                         if k
                         in (
-                            output["columns"]
-                            if "columns" in output
-                            and isinstance(output["columns"], list)
+                            output_format["columns"]
+                            if dict_key_is_truthy(output_format, "columns", list)
                             else []
                         )
                     }
                     hashed = hash(json.dumps(unique, sort_keys=True, default=str))
                     if last_hashed is None or hashed != last_hashed:
                         unique.update(
-                            {k: [] for k in output["children"].keys()}
-                            if output["children"]
+                            {k: [] for k in output_format["nested"].keys()}
+                            if output_format["nested"]
                             else {}
                         )
                         indexed.setdefault(hashed, unique)
-                    if output["children"]:
-                        for child_table in output["children"].keys():
-                            column_prefix = self.nested_column_prefix(child_table)
+                    if output_format["nested"]:
+                        for child_table in output_format["nested"].keys():
+                            column_prefix = nested_column_prefix(child_table)
                             nested = {
                                 k.replace(column_prefix, ""): v
                                 for k, v in row.items()
-                                if k not in output["columns"]
+                                if k not in output_format["columns"]
                                 and k.startswith(column_prefix)
                             }
                             # Only append the nested value if it isn't already
@@ -180,6 +146,128 @@ class SolarWindsQuery(object):
             "queries": str(queries),
         }
         return info
+
+    def output_format(self, base_table, nested_entities):
+        base_table_name = base_table["name"]
+        format = {}
+        lookup_entity_names = [
+            base_table["name"]
+            if dict_key_is_truthy(base_table, "all_columns", bool)
+            else []
+        ]
+        lookup_source_property_names = [
+            t
+            for t in nested_entities
+            if dict_key_is_truthy(nested_entities[t], "all_columns", bool)
+        ]
+        entity_properties = self.retrieve_entity_properties(
+            lookup_entity_names, lookup_source_property_names
+        )
+
+        format["columns"] = [
+            (c)
+            for c in (
+                base_table["columns"]
+                if not dict_key_is_truthy(base_table, "all_columns", bool)
+                and dict_key_is_truthy(base_table, "columns", list)
+                else (
+                    entity_properties[base_table_name]
+                    if base_table_name in entity_properties
+                    else []
+                )
+            )
+            if not "." in c
+        ]
+
+        all_nested_entities = list(
+            set(
+                [c.split(".")[0] for c in base_table["columns"] if "." in c]
+                + list(nested_entities.keys())
+            )
+        )
+
+        format["nested"] = {}
+        for entity_name in all_nested_entities:
+            format["nested"][entity_name] = {}
+            if dict_key_is_truthy(nested_entities[entity_name], "all_columns", bool):
+                format["nested"][entity_name]["columns"] = entity_properties[
+                    entity_name
+                ]
+            else:
+                nested_via_base_table = [
+                    c.split(".")[1]
+                    for c in base_table["columns"]
+                    if c.split(".")[0] == entity_name
+                ]
+                if dict_key_is_truthy(nested_entities[entity_name], "columns", list):
+                    nested = nested_entities[entity_name]["columns"]
+                format["nested"][entity_name]["columns"] = list(
+                    set(nested_via_base_table + nested)
+                )
+        return format
+
+    def retrieve_entity_properties(self, entity_names, source_property_names):
+        entity_names_sql = ",".join("'{0}'".format(e) for e in entity_names)
+        if source_property_names:
+            by_source_property_names_sql = " ".join(
+                [
+                    "UNION ALL (",
+                    "SELECT DISTINCT P.Entity.Antecedents.SourcePropertyName as Lookup,",
+                    "EntityName, Name",
+                    "FROM Metadata.Property AS P",
+                    "WHERE EntityName IN (",
+                    "SELECT TargetType FROM Metadata.Relationship",
+                    "WHERE SourceType IN (",
+                    entity_names_sql,
+                    ")",
+                    "AND SourcePropertyName IN (",
+                    ",".join("'{0}'".format(e) for e in source_property_names),
+                    "))",
+                    "AND IsNavigable = false",
+                    ")",
+                ]
+            )
+        else:
+            by_source_property_names_sql = ""
+        query = " ".join(
+            [
+                "SELECT DISTINCT EntityName AS Lookup, EntityName, Name",
+                "FROM Metadata.Property WHERE EntityName IN (",
+                entity_names_sql,
+                ") AND IsNavigable = false",
+                by_source_property_names_sql,
+            ]
+        )
+        query_res = self._client.query(query)
+        properties = {
+            r["Lookup"]: [
+                p["Name"] for p in query_res["results"] if p["Lookup"] == r["Lookup"]
+            ]
+            for r in query_res["results"]
+        }
+        return properties
+
+    def projected_columns(self, base_table_name, output):
+        projected_columns = [
+            c
+            for c in (
+                output["columns"]
+                if "columns" in output and isinstance(output["columns"], list)
+                else []
+            )
+            + [
+                "{0}.{1}.{2} AS {3}{4}".format(
+                    table_alias(base_table_name), t, c, nested_column_prefix(t), c
+                )
+                for t in (
+                    output["nested"]
+                    if "nested" in output and isinstance(output["nested"], dict)
+                    else {}
+                )
+                for c in output["nested"][t]["columns"]
+            ]
+        ]
+        return projected_columns
 
     def column_filters(self, filter_content):
         filters = []
@@ -248,7 +336,7 @@ class SolarWindsQuery(object):
                     [
                         ("OR " if i > 0 else "")
                         + "{0}.{1} {2} {3}".format(
-                            self.table_alias(base_table), item, c[0], c[1]
+                            table_alias(base_table), item, c[0], c[1]
                         )
                         for i, c in enumerate(column_filters)
                     ]
