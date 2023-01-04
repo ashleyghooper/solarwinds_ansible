@@ -126,9 +126,9 @@ EXAMPLES = r"""
     - name: Run a regular SolarWinds Information Service query
       anophelesgreyhoe.solarwinds.solarwinds_info:
         solarwinds_connection:
-          hostname: "{{ orion_hostname }}"
-          username: "{{ orion_username }}"
-          password: "{{ orion_password }}"
+          hostname: "{{ solarwinds_host }}"
+          username: "{{ solarwinds_username }}"
+          password: "{{ solarwinds_password }}"
         base_table:
           name: Orion.Engines
           all_columns: yes
