@@ -53,13 +53,10 @@ author:
   - "Ashley Hooper (@ashleyghooper)"
 
 options:
-  base_table:
+  output:
     description:
-      - The table to serve as the primary information source for the query.
-  columns:
-    description:
-      - Specification of which columns to include in output, in the form of a
-        dict of table names, with each element either being empty (in
+      - Specification of columns to include in output, in the form of a
+        dict containing table names, with each element either being empty (in
         which case all columns will be returned), or a list of columns.
     type: dict
   include:
@@ -233,7 +230,8 @@ class SolarWindsInfo(object):
         solarwinds_query = SolarWindsQuery(module, self.solarwinds.client)
         return solarwinds_query.query(
             params["base_table"],
-            params["columns"],
+            params["output"]["columns"],
+            params["output"]["children"],
             params["include"],
             params["exclude"],
         )
@@ -249,21 +247,23 @@ def main():
         base_table=dict(
             type="str",
         ),
-        columns=dict(
+        output=dict(
             type="dict",
+            options=dict(
+                columns=dict(type="list", elements="str", default=[]),
+                children=dict(type="dict", default={}),
+            ),
+            default=dict(columns=[], children={}),
         ),
-        include=dict(
-            type="dict",
-        ),
-        exclude=dict(
-            type="dict",
-        ),
+        include=dict(type="dict"),
+        exclude=dict(type="dict"),
     )
 
     argument_spec.update(solarwindsclient_argument_spec())
 
     module = AnsibleModule(
         argument_spec=argument_spec,
+        required_one_of=[["output", "include", "exclude"]],
         supports_check_mode=True,
     )
 
