@@ -743,6 +743,7 @@ class SolarWindsQuery(object):
 
     def where_clause(self, filters, tables):
         if filters is not None:
+            criteria_sql_parts = []
             for table in [t for t in tables if t in filters]:
                 alias = self._metadata["aliases"][table]
                 for column in filters[table]:
@@ -755,12 +756,12 @@ class SolarWindsQuery(object):
                                 str(filter_content), table, column, data_type
                             )
                         )
-                    column_criteria_sql = " ".join(
+                    criteria_sql_part_column = " ".join(
                         [
                             ("OR " if i > 0 else "")
                             + "{0}.{1} {2} {3}".format(alias, column, c[0], c[1])
                             for i, c in enumerate(column_filters)
                         ]
                     )
-
-                    return "({0})".format(column_criteria_sql)
+                    criteria_sql_parts.append("({0})".format(criteria_sql_part_column))
+            return " AND ".join(criteria_sql_parts)
