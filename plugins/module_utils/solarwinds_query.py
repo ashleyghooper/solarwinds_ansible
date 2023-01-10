@@ -159,7 +159,7 @@ class SolarWindsQuery(object):
         base_table_name = base_table["name"]
         format = {}
         lookup_entity_names = [
-            base_table["name"]
+            base_table_name
             if dict_key_is_truthy(base_table, "all_columns", bool)
             else []
         ]
@@ -255,12 +255,13 @@ class SolarWindsQuery(object):
         }
         return properties
 
-    def projected_columns(self, base_table_name, output):
+    def projected_columns(self, base_table_name, output_format):
         projected_columns = list(
             list(
                 (
-                    output["columns"]
-                    if "columns" in output and isinstance(output["columns"], list)
+                    output_format["columns"]
+                    if "columns" in output_format
+                    and isinstance(output_format["columns"], list)
                     else []
                 )
             )
@@ -269,11 +270,12 @@ class SolarWindsQuery(object):
                     a=table_alias(base_table_name), t=t, c=c, p=nested_column_prefix(t)
                 )
                 for t in (
-                    output["nested"]
-                    if "nested" in output and isinstance(output["nested"], dict)
+                    output_format["nested"]
+                    if "nested" in output_format
+                    and isinstance(output_format["nested"], dict)
                     else {}
                 )
-                for c in output["nested"][t]["columns"]
+                for c in output_format["nested"][t]["columns"]
             ]
         )
         return projected_columns
