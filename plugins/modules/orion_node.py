@@ -106,7 +106,7 @@ options:
     description:
       - Enable automatic update of agent versions.
     type: bool
-    default: 'no'
+    default: false
 
   polling_engine_id:
     description:
@@ -194,7 +194,7 @@ requirements:
 EXAMPLES = r"""
 - name: Remove nodes
   hosts: all
-  gather_facts: no
+  gather_facts: false
   tasks:
     - name:  Remove a node from Orion
       anophelesgreyhoe.solarwinds.orion_node:
@@ -209,7 +209,7 @@ EXAMPLES = r"""
 
 - name: Mute nodes
   hosts: all
-  gather_facts: no
+  gather_facts: false
   tasks:
     - anophelesgreyhoe.solarwinds.orion_node:
         solarwinds_connection:

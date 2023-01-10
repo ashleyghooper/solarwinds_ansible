@@ -89,7 +89,7 @@ options:
         C(Orion.Nodes.Interfaces) is accessible via C(Interfaces).
       - For each nested entity, individual columns can be specified below
         via the I(columns) option, or alternatively all columns can be returned
-        if I(all_columns=yes) is provided.
+        if I(all_columns=true) is provided.
     type: dict
 
   include:
@@ -121,7 +121,7 @@ requirements:
 EXAMPLES = r"""
 - name: Get details of all SolarWinds polling engines
   hosts: localhost
-  gather_facts: no
+  gather_facts: false
   tasks:
     - name: Run a regular SolarWinds Information Service query
       anophelesgreyhoe.solarwinds.solarwinds_info:
@@ -131,12 +131,12 @@ EXAMPLES = r"""
           password: "{{ solarwinds_password }}"
         base_table:
           name: Orion.Engines
-          all_columns: yes
+          all_columns: true
       delegate_to: localhost
 
 - name: Find all nodes that are polled using SNMP v1 or v2
   hosts: localhost
-  gather_facts: no
+  gather_facts: false
   tasks:
     - name:  Run a regular SolarWinds Information Service query
       anophelesgreyhoe.solarwinds.solarwinds_info:
@@ -146,7 +146,7 @@ EXAMPLES = r"""
           password: "{{ solarwinds_password }}"
         base_table:
           name: Orion.Nodes
-          all_columns: yes
+          all_columns: true
         include:
           ObjectSubType: SNMP
           SNMPVersion:
@@ -156,7 +156,7 @@ EXAMPLES = r"""
 
 - name: Find all nodes in Australia with IP addresses starting with '10.100.0.'
   hosts: localhost
-  gather_facts: no
+  gather_facts: false
   tasks:
     - name:  Run a regular SolarWinds Information Service query
       anophelesgreyhoe.solarwinds.solarwinds_info:
@@ -166,7 +166,7 @@ EXAMPLES = r"""
           password: "{{ solarwinds_password }}"
         base_table:
           name: Orion.Nodes
-          all_columns: yes
+          all_columns: true
         nested_entities:
           Orion.NodesCustomPropeties:
             columns:
@@ -178,7 +178,7 @@ EXAMPLES = r"""
 
 - name: Find all nodes currently having severity of 100 or higher
   hosts: localhost
-  gather_facts: no
+  gather_facts: false
   tasks:
     - name:  Run a regular SolarWinds Information Service query
       anophelesgreyhoe.solarwinds.solarwinds_info:
@@ -188,7 +188,7 @@ EXAMPLES = r"""
           password: "{{ solarwinds_password }}"
         base_table:
           name: Orion.Nodes
-          all_columns: yes
+          all_columns: true
         include:
           Severity:
             min: 100
@@ -196,7 +196,7 @@ EXAMPLES = r"""
 
 - name: Find nodes in Australia with current status of 'Down'
   hosts: localhost
-  gather_facts: no
+  gather_facts: false
   tasks:
     - name:  Run a regular SolarWinds Information Service query
       anophelesgreyhoe.solarwinds.solarwinds_info:
