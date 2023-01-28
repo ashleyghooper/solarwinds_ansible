@@ -168,7 +168,7 @@ EXAMPLES = r"""
           name: Orion.Nodes
           all_columns: true
         nested_entities:
-          Orion.NodesCustomPropeties:
+          Orion.NodesCustomProperties:
             columns:
               - Country
         include:
@@ -194,7 +194,7 @@ EXAMPLES = r"""
             min: 100
       delegate_to: localhost
 
-- name: Find nodes in Australia with current status of 'Down'
+- name: Nodes with status of 'Down' excluding any with custom property Country = 'Australia'
   hosts: localhost
   gather_facts: false
   tasks:
@@ -306,8 +306,15 @@ def main():
         )
 
     solarwinds = SolarWindsClient(module)
-    info = SolarWindsInfo(solarwinds)
-    res_args = dict(changed=False, info=info.info(module))
+    solarwinds_info = SolarWindsInfo(solarwinds)
+    info = solarwinds_info.info(module)
+    res_args = dict(
+        changed=False,
+        count=len(info["data"]),
+        solarwinds_info=info["data"],
+    )
+    if "queries" in info:
+        res_args["queries"] = info["queries"]
     module.exit_json(**res_args)
 
 

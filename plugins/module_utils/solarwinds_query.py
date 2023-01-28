@@ -148,12 +148,12 @@ class SolarWindsQuery(object):
 
                 data = list(indexed.values())
 
-        info = {
+        output = {
             "data": data,
-            "count": len(data),
-            "queries": str(queries),
         }
-        return info
+        if self._module._verbosity > 0:
+            output["queries"] = str(queries)
+        return output
 
     def output_format(self, base_table, nested_entities):
         base_table_name = base_table["name"]
