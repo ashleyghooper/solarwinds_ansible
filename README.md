@@ -12,6 +12,8 @@
 | `orion_node`      | Manage nodes in SolarWinds Orion         |
 | `solarwinds_info` | Query the SolarWinds Information Service |
 
+See module documentation for more information on usage.
+
 ## Examples
 
 Rather than simple playbooks as below, you may wish to create your own
@@ -149,9 +151,10 @@ entities.
           CustomProperties:
             columns:
               - Country
-        include:
-          IPAddress: "10.150.%"
-          CustomProperties.Country: Australia
+        filters:
+          - include:
+              IPAddress: "10.150.%"
+              CustomProperties.Country: Australia
       delegate_to: localhost
       throttle: 1
       register: info

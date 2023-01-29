@@ -60,37 +60,40 @@ class SolarWindsQuery(object):
         self,
         in_base_table,
         in_nested_entities,
-        in_includes,
-        in_excludes,
+        in_filters,
     ):
         queries = []
         base_table = in_base_table
         if in_nested_entities is None:
             in_nested_entities = {}
-        if in_includes is None:
-            in_includes = {}
-        if in_excludes is None:
-            in_excludes = {}
         output_format = self.output_format(in_base_table, in_nested_entities)
-
         base_table_name = base_table["name"]
         projected_columns = self.projected_columns(base_table_name, output_format)
         if not projected_columns:
             # Minimal column projection to ensure a valid SQL query
             projected_columns = [("no_output_columns", "1")]
-
         query = (
             SQLQueryBuilder()
             .SELECT(*projected_columns)
             .FROM("{0} AS {1}".format(base_table_name, table_alias(base_table_name)))
         )
 
-        if in_includes:
-            query.WHERE(self.where_clause(base_table_name, in_includes))
-        if in_excludes:
-            query.WHERE(
-                "NOT {0}".format(self.where_clause(base_table_name, in_excludes))
-            )
+        filters = []
+        if in_filters:
+            for filter in in_filters:
+                filter_sql = []
+                if dict_key_is_truthy(filter, "include", dict):
+                    filter_sql.append(
+                        self.where_clause(base_table_name, filter["include"])
+                    )
+                if dict_key_is_truthy(filter, "exclude", dict):
+                    filter_sql.append(
+                        "AND NOT {0}".format(
+                            self.where_clause(base_table_name, filter["exclude"])
+                        )
+                    )
+                filters.append("({0})".format(" ".join(filter_sql)))
+            query.WHERE(" OR ".join(filters))
 
         try:
             queries.append(str(query))
@@ -158,55 +161,83 @@ class SolarWindsQuery(object):
     def output_format(self, base_table, nested_entities):
         base_table_name = base_table["name"]
         format = {}
-        lookup_entity_names = [
-            base_table_name
-            if dict_key_is_truthy(base_table, "all_columns", bool)
-            else []
-        ]
         lookup_source_property_names = [
             t
             for t in nested_entities
-            if dict_key_is_truthy(nested_entities[t], "all_columns", bool)
+            if nested_entities[t] is None
+            or (nested_entities[t] is not None and "columns" not in nested_entities[t])
         ]
+
+        # Look up properties for the base table if no columns specified for it,
+        # or if one or more nested entities have no columns specified.
+        lookup_entity_names = [
+            base_table_name
+            if lookup_source_property_names
+            or "columns" not in base_table
+            or base_table["columns"] is None
+            else []
+        ]
+
         entity_properties = self.retrieve_entity_properties(
             lookup_entity_names, lookup_source_property_names
         )
-
         format["columns"] = [
             (c)
             for c in (
                 base_table["columns"]
-                if not dict_key_is_truthy(base_table, "all_columns", bool)
-                and dict_key_is_truthy(base_table, "columns", list)
-                else (
-                    entity_properties[base_table_name]
-                    if base_table_name in entity_properties
-                    else []
-                )
+                if "columns" in base_table
+                and base_table["columns"] is not None
+                and isinstance(base_table["columns"], list)
+                else entity_properties[base_table_name]
             )
             if "." not in c
         ]
 
         all_nested_entities = list(
             set(
-                [c.split(".")[0] for c in base_table["columns"] if "." in c]
+                [
+                    c.split(".")[0]
+                    for c in (
+                        base_table["columns"]
+                        if "columns" in base_table and base_table["columns"] is not None
+                        else []
+                    )
+                    if "." in c
+                ]
                 + list(nested_entities.keys())
             )
         )
 
         format["nested"] = {}
-        for entity_name in all_nested_entities:
+        for entity_name in [
+            e
+            for e in all_nested_entities
+            if e in nested_entities
+            and nested_entities[e] is None
+            or (
+                nested_entities[e] is not None
+                and dict_key_is_truthy(nested_entities[e], "columns", list)
+            )
+        ]:
             format["nested"][entity_name] = {}
-            if dict_key_is_truthy(nested_entities[entity_name], "all_columns", bool):
+            if nested_entities[entity_name] is None or (
+                nested_entities[entity_name] is not None
+                and "columns" not in nested_entities[entity_name]
+            ):
                 format["nested"][entity_name]["columns"] = entity_properties[
                     entity_name
                 ]
             else:
                 nested_via_base_table = [
                     c.split(".")[1]
-                    for c in base_table["columns"]
+                    for c in (
+                        base_table["columns"]
+                        if "columns" in base_table and base_table["columns"] is not None
+                        else []
+                    )
                     if c.split(".")[0] == entity_name
                 ]
+                nested = []
                 if dict_key_is_truthy(nested_entities[entity_name], "columns", list):
                     nested = nested_entities[entity_name]["columns"]
                 format["nested"][entity_name]["columns"] = list(
