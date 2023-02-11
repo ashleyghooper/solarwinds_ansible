@@ -7,9 +7,12 @@
 
 ## Included modules
 
-| Name         | Description                      |
-| ------------ | -------------------------------- |
-| `orion_node` | Manage nodes in SolarWinds Orion |
+| Name              | Description                              |
+| ----------------- | ---------------------------------------- |
+| `orion_node`      | Manage nodes in SolarWinds Orion         |
+| `solarwinds_info` | Query the SolarWinds Information Service |
+
+See module documentation for more information on usage.
 
 ## Examples
 
@@ -17,7 +20,9 @@ Rather than simple playbooks as below, you may wish to create your own
 collections/roles for greater flexibility, and to allow these to be called from
 other playbooks.
 
-### Add an SNMP or WMI node
+### `orion_node`
+
+#### Add an SNMP or WMI node
 
 NB: to add a WMI node, simply change `polling_method` to `wmi` and ensure that
 `credential_names` includes names of one or more WMI credentials with access.
@@ -25,7 +30,7 @@ NB: to add a WMI node, simply change `polling_method` to `wmi` and ensure that
 ```yaml
 - name: Discover and add node to Orion if not already
   hosts: all
-  gather_facts: no
+  gather_facts: false
   vars:
     credential_names:
       - snmp_credential1
@@ -51,9 +56,9 @@ NB: to add a WMI node, simply change `polling_method` to `wmi` and ensure that
   tasks:
     - anophelesgreyhoe.solarwinds.orion_node:
         solarwinds_connection:
-          hostname: "{{ orion_hostname }}"
-          username: "{{ orion_username }}"
-          password: "{{ orion_password }}"
+          hostname: "{{ solarwinds_hostname }}"
+          username: "{{ solarwinds_username }}"
+          password: "{{ solarwinds_password }}"
         node_name: "{{ inventory_hostname }}"
         state: present
         polling_method: snmp
@@ -65,7 +70,7 @@ NB: to add a WMI node, simply change `polling_method` to `wmi` and ensure that
       throttle: 1
 ```
 
-### Add a passive agent (server-initiated communication) node
+#### Add a passive agent (server-initiated communication) node
 
 Again, the below example is simplified. A more elaborate playbook might:
 
@@ -80,7 +85,7 @@ Again, the below example is simplified. A more elaborate playbook might:
 ```yaml
 - name: Discover and add passive agent node to Orion if not already
   hosts: all
-  gather_facts: no
+  gather_facts: false
   vars:
     custom_properties:
       Country: New Zealand
@@ -101,9 +106,9 @@ Again, the below example is simplified. A more elaborate playbook might:
   tasks:
     - anophelesgreyhoe.solarwinds.orion_node:
         solarwinds_connection:
-          hostname: "{{ orion_hostname }}"
-          username: "{{ orion_username }}"
-          password: "{{ orion_password }}"
+          hostname: "{{ solarwinds_hostname }}"
+          username: "{{ solarwinds_username }}"
+          password: "{{ solarwinds_password }}"
         node_name: "{{ inventory_hostname }}"
         state: present
         polling_method: agent
@@ -115,4 +120,42 @@ Again, the below example is simplified. A more elaborate playbook might:
         custom_properties: "{{ custom_properties }}"
       delegate_to: localhost
       throttle: 1
+```
+
+### `solarwinds_info`
+
+#### Get list of nodes in Australia with 10.150.* IP addresses
+
+Note that we're returning only selected properties for the node and related
+entities.
+
+```yaml
+- name: Node info
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: List Australia nodes with 10.150.* IP addresses
+      anophelesgreyhoe.solarwinds.solarwinds_info:
+        solarwinds_connection:
+          hostname: "{{ solarwinds_hostname }}"
+          username: "{{ solarwinds_username }}"
+          password: "{{ solarwinds_password }}"
+        base_table:
+          name: Orion.Nodes
+          columns:
+            - NodeID
+            - Caption
+            - IP
+            - StatusDescription
+        nested_entities:
+          CustomProperties:
+            columns:
+              - Country
+        filters:
+          - include:
+              IPAddress: "10.150.%"
+              CustomProperties.Country: Australia
+      delegate_to: localhost
+      throttle: 1
+      register: info
 ```

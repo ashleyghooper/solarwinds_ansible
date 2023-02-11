@@ -9,11 +9,12 @@ from __future__ import absolute_import, division, print_function
 
 __metaclass__ = type
 
-
 import traceback
 
 from ansible.module_utils.basic import missing_required_lib
 
+
+ORIONSDK_IMPORT_ERROR = None
 try:
     from orionsdk import SwisClient
 except ImportError:
@@ -56,7 +57,12 @@ def validate_connection_params(module):
             module.fail_json(msg=error_str.format(arg))
 
 
-class SolarwindsClient(object):
+def case_insensitive_key(d, k):
+    k = k.lower()
+    return [d[key] for key in d if key.lower() == k]
+
+
+class SolarWindsClient(object):
     """
     Class encapsulating SolarWinds Information Service API client.
     """

@@ -29,7 +29,7 @@ options:
       username:
         description:
           - Orion Username.
-          - Active Directory users may use DOMAIN\\username or username@DOMAIN format.
+          - Active Directory users may use C(DOMAIN\\username) or C(username@DOMAIN) format.
         type: str
         required: true
 
