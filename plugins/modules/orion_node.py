@@ -913,7 +913,7 @@ class OrionNode(object):
                             break
                     elif "name" in volume_filter:
                         if re.search(
-                            volume_filter["name"], entry["DisplayName"], re.IGNORECASE
+                            volume_filter["name"], entry["VolumeDescription"], re.IGNORECASE
                         ):
                             remove_volume = True
                             break
