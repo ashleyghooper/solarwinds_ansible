@@ -855,7 +855,7 @@ class OrionNode(object):
                     elif "name" in interface_filter:
                         if re.search(
                             interface_filter["name"],
-                            entry["DisplayName"],
+                            entry["InterfaceName"],
                             re.IGNORECASE,
                         ):
                             remove_interface = True
