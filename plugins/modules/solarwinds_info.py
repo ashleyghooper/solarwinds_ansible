@@ -101,6 +101,7 @@ options:
       - For each nested entity, individual columns can be specified below
         via the I(columns) option, otherwise all columns will be returned.
     type: dict
+    default: {}
 
   filters:
     description:
@@ -245,7 +246,6 @@ EXAMPLES = r"""
 import traceback
 
 from ansible.module_utils.basic import AnsibleModule, missing_required_lib
-from ansible.module_utils._text import to_native
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.solarwinds_client import (
     SolarWindsClient,
     solarwindsclient_argument_spec,
@@ -291,7 +291,6 @@ class SolarWindsInfo(object):
 
 
 def main():
-
     argument_spec = dict(
         base_table=dict(
             type="dict",
