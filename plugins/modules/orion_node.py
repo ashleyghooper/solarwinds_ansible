@@ -148,18 +148,21 @@ options:
       - List of credential names to use for node discovery
     type: list
     elements: str
+    default: []
 
   discovery_interface_filters:
     description:
       - List of SolarWinds Orion interface discovery filters
     type: list
     elements: dict
+    default: []
 
   interface_filters:
     description:
       - List of regular expressions by which to exclude interfaces from monitoring
     type: list
     elements: dict
+    default: []
 
   interface_filter_cutoff_max:
     description:
@@ -172,6 +175,7 @@ options:
       - List of regular expressions by which to exclude volumes from monitoring
     type: list
     elements: dict
+    default: []
 
   volume_filter_cutoff_max:
     description:
@@ -183,6 +187,7 @@ options:
     description:
       - A dictionary containing custom properties and their values
     type: dict
+    default: {}
 
 requirements:
   - "python >= 2.6"
@@ -570,7 +575,7 @@ class OrionNode(object):
         except Exception as ex:
             module.fail_json(
                 msg="Failed to create core plugin configuration: {0}".format(str(ex)),
-                **props
+                **props,
             )
 
         expression_filters = [
@@ -601,7 +606,7 @@ class OrionNode(object):
                 msg="Failed to create interfaces plugin configuration for node discovery: {0}".format(
                     str(ex)
                 ),
-                **props
+                **props,
             )
 
         discovery_name = "orion_node.py.{0}.{1}".format(
@@ -644,29 +649,40 @@ class OrionNode(object):
 
         # Loop until discovery job finished
         discovery_active = True
+        discovery_failed = False
         discovery_iter = 0
+        status_res = None
         while discovery_active:
             try:
                 status_res = self.client.query(
-                    "SELECT Status FROM Orion.DiscoveryProfiles WHERE ProfileID = @profile_id",
+                    "SELECT Status, StatusDescription FROM Orion.DiscoveryProfiles WHERE ProfileID = @profile_id",
                     profile_id=discovery_profile_id,
                 )
             except Exception as ex:
                 module.fail_json(
                     msg="Failed to query node discovery status: {0}".format(str(ex)),
-                    **props
+                    **props,
                 )
-            if len(status_res["results"]) > 0:
+            if (
+                status_res
+                and "results" in status_res
+                and len(status_res["results"]) > 0
+            ):
                 discovery_job_status = int(
                     next(s for s in status_res["results"])["Status"]
                 )
                 if discovery_job_status in [
                     ORION_DISCOVERY_JOB_STATUS_FINISHED,
+                ]:
+                    discovery_active = False
+                elif discovery_job_status in [
+                    ORION_DISCOVERY_JOB_STATUS_UNKNOWN,
                     ORION_DISCOVERY_JOB_STATUS_ERROR,
                     ORION_DISCOVERY_JOB_STATUS_NOT_COMPLETED,
                     ORION_DISCOVERY_JOB_STATUS_CANCELING,
                 ]:
                     discovery_active = False
+                    discovery_failed = True
             else:
                 discovery_active = False
             # Only check retries and sleep if discovery job is still in progress
@@ -675,9 +691,21 @@ class OrionNode(object):
                 if discovery_iter >= DISCOVERY_STATUS_CHECK_RETRIES:
                     module.fail_json(
                         msg="Timeout while waiting for node discovery job to terminate",
-                        **props
+                        **props,
                     )
                 time.sleep(DISCOVERY_RETRY_SLEEP_SECS)
+
+        # Fail if discovery failed
+        if discovery_failed:
+            discovery_job_status_desc = next(s for s in status_res["results"])[
+                "StatusDescription"
+            ]
+            module.fail_json(
+                msg="Discovery failed - check polling engine and its connectivity to target, "
+                "credentials, and polling method options (e.g. SNMP version): discovery "
+                " profile status '{0}'".format(discovery_job_status_desc),
+                **props,
+            )
 
         # Retrieve Result and BatchID to find items added to new node by discovery
         discovery_log_res = None
@@ -691,23 +719,14 @@ class OrionNode(object):
                 ),
                 profile_id=discovery_profile_id,
             )
+            discovery_log = discovery_log_res["results"][0]
+
         except Exception as ex:
             module.fail_json(
-                msg="Failed to query discovery logs: {0}".format(str(ex)), **props
-            )
-        discovery_log = discovery_log_res["results"][0]
-
-        # Any of the below values for Result indicate a failure, so we'll abort
-        if int(discovery_log["Result"]) in [
-            ORION_DISCOVERY_JOB_STATUS_UNKNOWN,
-            ORION_DISCOVERY_JOB_STATUS_ERROR,
-            ORION_DISCOVERY_JOB_STATUS_NOT_COMPLETED,
-            ORION_DISCOVERY_JOB_STATUS_CANCELING,
-        ]:
-            module.fail_json(
-                msg="Node discovery did not complete successfully: {0}".format(
-                    str(discovery_log_res)
-                )
+                msg="Failed to query discovery logs or no logs returned: {0}".format(
+                    str(ex)
+                ),
+                **props,
             )
 
         # Look up NodeID of node we discovered. We have to do all of these joins
@@ -740,7 +759,7 @@ class OrionNode(object):
                 msg="Node '{0}' not found in discovery results (got {1}): {2}".format(
                     module.params["node_name"], discovered_nodes_res["results"], str(ex)
                 ),
-                **props
+                **props,
             )
 
         return discovered_node
@@ -768,7 +787,7 @@ class OrionNode(object):
         except Exception as ex:
             module.fail_json(
                 msg="Failed to schedule list resources job: {0}".format(str(ex)),
-                **props
+                **props,
             )
 
         job_creation_pending = True
@@ -799,7 +818,7 @@ class OrionNode(object):
                 if job_retries_iter >= LIST_RESOURCES_STATUS_CHECK_RETRIES:
                     module.fail_json(
                         msg="Timeout waiting for ListResources job to terminate",
-                        **props
+                        **props,
                     )
                 time.sleep(LIST_RESOURCES_RETRY_SLEEP_SECS)
 
@@ -867,7 +886,7 @@ class OrionNode(object):
                     msg="Too many interfaces to remove ({0}) - aborting for safety".format(
                         str(len(interfaces_to_remove))
                     ),
-                    **props
+                    **props,
                 )
 
             for interface in interfaces_to_remove:
@@ -913,7 +932,9 @@ class OrionNode(object):
                             break
                     elif "name" in volume_filter:
                         if re.search(
-                            volume_filter["name"], entry["VolumeDescription"], re.IGNORECASE
+                            volume_filter["name"],
+                            entry["VolumeDescription"],
+                            re.IGNORECASE,
                         ):
                             remove_volume = True
                             break
@@ -924,7 +945,7 @@ class OrionNode(object):
                     msg="Too many volumes to remove ({0}) - aborting for safety".format(
                         str(len(volumes_to_remove))
                     ),
-                    **props
+                    **props,
                 )
 
             for volume in volumes_to_remove:
@@ -943,7 +964,7 @@ class OrionNode(object):
                 msg="Failed to update node Caption from '{0}' to '{1}': {2}".format(
                     node["caption"], props["Caption"], str(ex)
                 ),
-                **props
+                **props,
             )
 
     def set_dns(self, module, props, node):
@@ -957,7 +978,7 @@ class OrionNode(object):
                     msg="Failed to set DNS name '{0}': {1}".format(
                         props["DNS"], str(ex)
                     ),
-                    **node
+                    **node,
                 )
 
     def set_custom_properties(self, module, props, node):
@@ -980,7 +1001,7 @@ class OrionNode(object):
                     except Exception as ex:
                         module.fail_json(
                             msg="Failed to add custom properties: {0}".format(str(ex)),
-                            **node
+                            **node,
                         )
 
     def add_node_agent(self, module, node, props):
@@ -990,7 +1011,7 @@ class OrionNode(object):
                 msg="Agent mode '{0}' is not currently supported".format(
                     params["agent_mode"]
                 ),
-                **props
+                **props,
             )
 
         agent_name = props["Caption"]
@@ -1034,7 +1055,7 @@ class OrionNode(object):
                     if node_status_iter >= AGENT_NODE_CREATION_CHECK_RETRIES:
                         module.fail_json(
                             msg="No more retries while waiting for node to be created for new agent",
-                            **props
+                            **props,
                         )
                     time.sleep(AGENT_NODE_CREATION_SLEEP_SECS)
         return node
@@ -1066,7 +1087,7 @@ class OrionNode(object):
                     msg="Failed to move node to final polling engine '{0}': {1}".format(
                         module.params["polling_engine_name"], str(ex)
                     ),
-                    **node
+                    **node,
                 )
         return node
 
@@ -1238,7 +1259,6 @@ class OrionNode(object):
 
 
 def main():
-
     argument_spec = dict(
         state=dict(
             type="str",

@@ -11,7 +11,6 @@ __metaclass__ = type
 
 import hashlib
 import json
-import traceback
 from datetime import datetime
 
 from ansible_collections.anophelesgreyhoe.solarwinds.plugins.module_utils.sql_query_builder import (

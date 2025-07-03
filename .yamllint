@@ -2,7 +2,7 @@
 extends: default
 
 ignore: |
-  individuals/
+  changelogs/*
 
 rules:
   braces: disable
