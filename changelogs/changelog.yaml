@@ -8,3 +8,15 @@ releases:
     fragments:
     - 11-improve-orion-node-discovery-error-handling.yml
     release_date: '2025-07-03'
+  2.1.4:
+    changes:
+      bugfixes:
+      - orion_node - add retry/sleep around passive agent ScheduleListResources invocation
+        to work around failure immediately upon node creation
+      release_summary: '| Release Date: 2025-08-12
+
+        '
+    fragments:
+    - 2.1.4_summary.yaml
+    - 2025081201.yaml
+    release_date: '2025-08-12'

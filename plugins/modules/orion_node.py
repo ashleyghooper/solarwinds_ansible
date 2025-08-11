@@ -270,6 +270,13 @@ else:
 # These control checks for node creation after an agent is registered.
 AGENT_NODE_CREATION_CHECK_RETRIES = 10
 AGENT_NODE_CREATION_SLEEP_SECS = 3
+# For newer versions of SolarWinds (e.g. 2025.1.1) and the SolarWinds
+# Agent, attempting to invoke ScheduleListResources immediately upon node
+# creation may fail; the invocation is now wrapped in a while loop with
+# try/except to enable retries without introducing undue delay for sites
+# where this issue is not seen.
+AGENT_NODE_LIST_RESOURCES_RETRIES = 6
+AGENT_NODE_LIST_RESOURCES_SLEEP_SECS = 10
 # These constants control how many times and at what interval this module
 # will check the status of the Orion discovery job to see if it has completed.
 # Total time will be retries multiplied by sleep seconds.
@@ -779,16 +786,26 @@ class OrionNode(object):
 
     def list_resources_for_node(self, module, props, node):
         # Initiate list resources job for node
-        try:
-            list_resources_res = self.client.invoke(
-                "Orion.Nodes", "ScheduleListResources", node["node_id"]
-            )
-            self.changed = True
-        except Exception as ex:
-            module.fail_json(
-                msg="Failed to schedule list resources job: {0}".format(str(ex)),
-                **props,
-            )
+        schedule_list_resources_pending = True
+        schedule_list_resources_iter = 0
+        list_resources_res = None
+        while schedule_list_resources_pending:
+            try:
+                list_resources_res = self.client.invoke(
+                    "Orion.Nodes", "ScheduleListResources", node["node_id"]
+                )
+                self.changed = True
+                schedule_list_resources_pending = False
+            except Exception as ex:
+                time.sleep(AGENT_NODE_LIST_RESOURCES_SLEEP_SECS)
+                schedule_list_resources_iter += 1
+                if schedule_list_resources_iter >= AGENT_NODE_LIST_RESOURCES_RETRIES:
+                    module.fail_json(
+                        msg="Failed to schedule list resources job for node {0}: {1}".format(
+                            node["node_id"], str(ex)
+                        ),
+                        **props,
+                    )
 
         job_creation_pending = True
         job_retries_iter = 0
